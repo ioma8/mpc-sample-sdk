@@ -55,8 +55,12 @@ pub struct OutputInfo {
     pub device_delay: u32,
     /// The output ring's size in frames, zero until read.
     pub buffer_out: u32,
+    /// The output ring's period size in frames, zero until read.
+    pub period_out: u32,
     /// The input ring's size in frames, zero until read.
     pub buffer_in: u32,
+    /// The input ring's period size in frames, zero until read.
+    pub period_in: u32,
     /// The input stream's own backlog, in frames.
     pub input_delay: u32,
     /// The loudest output sample so far, as bits.
@@ -72,7 +76,13 @@ impl OutputInfo {
     #[must_use]
     pub fn latency(&self, backlog: u32, extra: u32) -> (u32, u8) {
         let (measured, source) = if self.buffer_out > 0 && self.buffer_in > 0 {
-            (u64::from(self.buffer_out) + u64::from(self.buffer_in), b'B')
+            // The firmware's own JUCE/ALSA latency is one fewer period than the
+            // ring: (periods - 1) * period_size = buffer - period.
+            (
+                u64::from(self.buffer_out.saturating_sub(self.period_out))
+                    + u64::from(self.buffer_in.saturating_sub(self.period_in)),
+                b'B',
+            )
         } else {
             (
                 u64::from(self.device_delay)
@@ -86,12 +96,25 @@ impl OutputInfo {
             u32::try_from(measured.saturating_add(u64::from(extra)).min(16_384)).unwrap_or(16_384);
         (total, source)
     }
+
+    /// The input-side device latency: one period less than the capture ring.
+    #[must_use]
+    pub fn input_latency(&self) -> u32 {
+        self.buffer_in.saturating_sub(self.period_in)
+    }
+
+    /// The output-side device latency: one period less than the playback ring.
+    #[must_use]
+    pub fn output_latency(&self) -> u32 {
+        self.buffer_out.saturating_sub(self.period_out)
+    }
 }
 
 /// The ALSA entry points, resolved once from the next object in the search order.
 type HwMalloc = unsafe extern "C" fn(*mut *mut libc::c_void) -> i32;
 type HwCurrent = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_void) -> i32;
 type HwBufsize = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_ulong) -> i32;
+type HwPeriodSize = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_ulong, *mut i32) -> i32;
 type HwChannels = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_uint) -> i32;
 type HwFormat = unsafe extern "C" fn(*mut libc::c_void, *mut i32) -> i32;
 type HwFree = unsafe extern "C" fn(*mut libc::c_void);
@@ -100,6 +123,7 @@ struct Alsa {
     malloc: HwMalloc,
     current: HwCurrent,
     bufsize: HwBufsize,
+    period: HwPeriodSize,
     channels: HwChannels,
     format: HwFormat,
     free: HwFree,
@@ -125,6 +149,7 @@ impl Alsa {
                 malloc: look_up(c"snd_pcm_hw_params_malloc")?,
                 current: look_up(c"snd_pcm_hw_params_current")?,
                 bufsize: look_up(c"snd_pcm_hw_params_get_buffer_size")?,
+                period: look_up(c"snd_pcm_hw_params_get_period_size")?,
                 channels: look_up(c"snd_pcm_hw_params_get_channels")?,
                 format: look_up(c"snd_pcm_hw_params_get_format")?,
                 free: look_up(c"snd_pcm_hw_params_free")?,
@@ -140,7 +165,12 @@ impl Alsa {
 /// # Safety
 ///
 /// `pcm` must be the app's live PCM handle; the out pointers may be null.
-pub unsafe fn stream_geometry(pcm: usize, channels: *mut u32, s32: *mut i32) -> u32 {
+pub unsafe fn stream_geometry(
+    pcm: usize,
+    channels: *mut u32,
+    s32: *mut i32,
+    period: *mut u32,
+) -> u32 {
     let Some(alsa) = Alsa::load() else {
         return 0;
     };
@@ -161,6 +191,23 @@ pub unsafe fn stream_geometry(pcm: usize, channels: *mut u32, s32: *mut i32) -> 
             && size < DEVICE_MAX_FRAMES
         {
             frames = u32::try_from(size).unwrap_or(0);
+        }
+        if !period.is_null() {
+            let mut size = 0_u64;
+            let mut direction = 0_i32;
+            // SAFETY: see above.
+            if unsafe {
+                (alsa.period)(
+                    params,
+                    core::ptr::from_mut(&mut size),
+                    core::ptr::from_mut(&mut direction),
+                )
+            } >= 0
+                && size < DEVICE_MAX_FRAMES
+            {
+                // SAFETY: the caller passed a writable slot.
+                unsafe { *period = u32::try_from(size).unwrap_or(0) };
+            }
         }
         if !channels.is_null() {
             let mut count = 0_u32;
@@ -208,8 +255,10 @@ pub static mut g_outtap_w: u32 = 0;
 static BUF_DIRTY: AtomicI32 = AtomicI32::new(0);
 /// The output ring's size in frames.
 static OUT_BUFFER: AtomicU32 = AtomicU32::new(0);
+static OUT_PERIOD: AtomicU32 = AtomicU32::new(0);
 /// The input ring's size in frames.
 static IN_BUFFER: AtomicU32 = AtomicU32::new(0);
+static IN_PERIOD: AtomicU32 = AtomicU32::new(0);
 /// The input stream's backlog, in frames.
 static IN_DELAY: AtomicU32 = AtomicU32::new(0);
 
@@ -242,6 +291,18 @@ pub fn output_buffer() -> u32 {
 #[must_use]
 pub fn input_buffer() -> u32 {
     IN_BUFFER.load(Ordering::Acquire)
+}
+
+/// The output ring's period size in frames, zero until read.
+#[must_use]
+pub fn output_period() -> u32 {
+    OUT_PERIOD.load(Ordering::Acquire)
+}
+
+/// The input ring's period size in frames, zero until read.
+#[must_use]
+pub fn input_period() -> u32 {
+    IN_PERIOD.load(Ordering::Acquire)
 }
 
 /// The input stream's backlog in frames, zero when unknown.
@@ -278,9 +339,15 @@ pub static mut G_IN_S32: i32 = 0;
 /// The input ring's size in frames, as last read (exported for the device tests).
 #[unsafe(no_mangle)]
 pub static mut g_buf_in: u32 = 0;
+/// The input ring's period size, as last read (exported for the device tests).
+#[unsafe(no_mangle)]
+pub static mut g_period_in: u32 = 0;
 /// The output ring's size in frames, as last read (exported for the device tests).
 #[unsafe(no_mangle)]
 pub static mut g_buf_out: u32 = 0;
+/// The output ring's period size, as last read (exported for the device tests).
+#[unsafe(no_mangle)]
+pub static mut g_period_out: u32 = 0;
 
 /// The app's own `snd_pcm_writei`.
 static REAL_WRITEI: std::sync::OnceLock<
@@ -344,7 +411,9 @@ pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u6
             block_frames: block,
             device_delay: delay,
             buffer_out: output_buffer(),
+            period_out: output_period(),
             buffer_in: input_buffer(),
+            period_in: input_period(),
             input_delay: input_delay(),
             // SAFETY: the audio thread updates the peak after each write.
             output_peak_bits: unsafe { G_OUT_PEAK_BITS },
@@ -386,18 +455,22 @@ fn recordable(size: u64, written: i64, channels: u32, s32: i32) -> bool {
 unsafe fn refresh_output(pcm: usize) {
     let mut channels = 0_u32;
     let mut s32 = 0_i32;
+    let mut period = 0_u32;
     // SAFETY: the geometry reads the stream's own parameters.
     let frames = unsafe {
         stream_geometry(
             pcm,
             core::ptr::from_mut(&mut channels),
             core::ptr::from_mut(&mut s32),
+            core::ptr::from_mut(&mut period),
         )
     };
     OUT_BUFFER.store(frames, Ordering::Release);
+    OUT_PERIOD.store(period, Ordering::Release);
     // SAFETY: this module's statics.
     unsafe {
         g_buf_out = frames;
+        g_period_out = period;
         G_OUT_CH = channels;
         G_OUT_S32 = s32;
     }
@@ -602,18 +675,22 @@ unsafe fn measure_input_delay(pcm: usize) {
 unsafe fn refresh_input(pcm: usize) {
     let mut channels = 0_u32;
     let mut s32 = 0_i32;
+    let mut period = 0_u32;
     // SAFETY: the geometry reads the stream's own parameters.
     let frames = unsafe {
         stream_geometry(
             pcm,
             core::ptr::from_mut(&mut channels),
             core::ptr::from_mut(&mut s32),
+            core::ptr::from_mut(&mut period),
         )
     };
     IN_BUFFER.store(frames, Ordering::Release);
+    IN_PERIOD.store(period, Ordering::Release);
     // SAFETY: this module's statics.
     unsafe {
         g_buf_in = frames;
+        g_period_in = period;
         G_IN_CH = channels;
         G_IN_S32 = s32;
     }
@@ -910,7 +987,9 @@ mod tests {
             block_frames: 512,
             device_delay: 0,
             buffer_out: 0,
+            period_out: 0,
             buffer_in: 0,
+            period_in: 0,
             input_delay: 0,
             output_peak_bits: 0,
         };
@@ -940,11 +1019,13 @@ mod tests {
             block_frames: 64,
             device_delay: 100,
             buffer_out: 1024,
+            period_out: 128,
             buffer_in: 512,
+            period_in: 64,
             input_delay: 32,
             output_peak_bits: 0,
         };
-        assert_eq!(info.latency(8, 4), (1_540, b'B'));
+        assert_eq!(info.latency(8, 4), (1_348, b'B'));
         info.buffer_out = 0;
         assert_eq!(info.latency(8, 1), (205, b'E'));
     }

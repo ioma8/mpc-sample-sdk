@@ -110,15 +110,23 @@ path. Use whichever hook the stream selects; do not assume both run.
 
 ## Latency
 
-`OutputInfo::latency(backlog, extra)` returns the device latency in frames and
-the source byte the app's display expects:
+`OutputInfo::latency(backlog, extra)` returns the combined device latency in
+frames and the source byte the app's display expects. The firmware's own
+latency is one period less than each ring, `buffer - period`; use the
+directional accessors when the two sides need different compensation:
 
 ```rust
 fn latency_output(_frames: &mut [i32], info: &mpc_sample_sdk::audio::OutputInfo) {
-    let (frames, source) = info.latency(0, mpc_sample_sdk::audio::extra_latency());
-    let _ = (frames, source);
+    let input = info.input_latency();   // capture: buffer_in - period_in
+    let output = info.output_latency(); // playback: buffer_out - period_out
+    let (total, source) = info.latency(0, mpc_sample_sdk::audio::extra_latency());
+    let _ = (input, output, total, source);
 }
 ```
+
+A recording drops `input_latency` frames; an overdub shifts by
+`input_latency + output_latency`. `period_in`/`period_out` are read with
+`snd_pcm_hw_params_get_period_size` on the stream's own thread.
 
 The calibration trim is available as `audio::extra_latency()` and
 `audio::set_extra_latency(frames)`. This is a UI-side setting; do not change it
