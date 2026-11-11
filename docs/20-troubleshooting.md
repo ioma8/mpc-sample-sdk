@@ -58,8 +58,9 @@ mod genuinely owns the event.
 
 ## Audio callback problems
 
-Do not allocate, lock, draw or call `status` from `on_output`/`on_input_*`. Use
-atomics or a preallocated buffer and let the UI poll.
+Do not allocate, lock, draw or call `status` from the `AudioHooks` functions
+(`output`, `input_interleaved`, `input_planar`). Use atomics or a preallocated
+buffer and let the UI poll.
 
 ## The mod panics
 

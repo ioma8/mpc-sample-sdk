@@ -6,9 +6,8 @@
 
 use core::cell::Cell;
 use core::fmt;
-use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::event::Mod;
+use crate::event::{AudioHooks, Mod};
 use crate::image::{self, Firmware};
 use crate::sites;
 
@@ -82,13 +81,12 @@ impl std::error::Error for InstallError {}
 static MODULE: std::sync::OnceLock<std::sync::Mutex<&'static mut dyn Mod>> =
     std::sync::OnceLock::new();
 
-/// How many audio callbacks are inside the module right now.
+/// The audio-side hooks, copied out of the mod at install.
 ///
-/// Only an audio callback sets this, and only while it holds the module lock.
-/// A UI callback may wait for that holder; it never waits for another UI
-/// callback, which is what keeps a native operation called from `on_paint` from
-/// deadlocking against a callback it is waiting for.
-static AUDIO_ACTIVE: AtomicU32 = AtomicU32::new(0);
+/// Audio callbacks call these function pointers directly instead of taking the
+/// module mutex, so a slow UI callback (Extract, a file write, a paint) can
+/// never drop an audio block.
+static AUDIO: std::sync::OnceLock<AudioHooks> = std::sync::OnceLock::new();
 
 thread_local! {
     /// Whether this thread is already inside a mod callback.
@@ -119,84 +117,33 @@ impl Drop for Reentry {
 
 /// Run `f` with exclusive access to the installed mod from the UI side.
 ///
-/// UI callbacks wait for an in-flight audio callback instead of being dropped:
-/// an encoder turn or button press must reach the mod.  A nested callback on the
-/// same thread (for example a draw callback reached through the hooked string
-/// constructor) observes `None` and forwards the stock event unchanged, which is
-/// what prevents reentrant `&mut` aliasing.
+/// UI callbacks never wait: if another UI callback owns the slot (a native
+/// operation re-entering from a second thread), the event is forwarded
+/// unchanged.  Audio callbacks never take this slot, so there is nothing for a
+/// UI callback to wait for.  A nested callback on the same thread observes
+/// `None`, which prevents reentrant `&mut` aliasing.
 pub fn with_mod<R>(f: impl FnOnce(&mut dyn Mod) -> R) -> Option<R> {
-    dispatch(MODULE.get()?, Dispatch::Ui, f)
+    dispatch(MODULE.get()?, f)
 }
 
-/// Run `f` from an audio callback without ever blocking the audio thread.
-///
-/// If a UI callback currently owns the module, the audio event is forwarded
-/// unchanged rather than waiting.  Audio and UI still never share `&mut self`.
-pub fn with_mod_audio<R>(f: impl FnOnce(&mut dyn Mod) -> R) -> Option<R> {
-    dispatch(MODULE.get()?, Dispatch::Audio, f)
+/// The audio hooks, or the empty set before install.
+#[must_use]
+pub fn audio_hooks() -> AudioHooks {
+    AUDIO.get().copied().unwrap_or_default()
 }
 
-/// How a callback waits for the module slot.
-#[derive(Clone, Copy)]
-enum Dispatch {
-    /// UI: wait only while an audio callback owns the slot.
-    Ui,
-    /// Audio: never wait; forward when the slot is owned.
-    Audio,
-}
-
-/// Marks an audio callback as holding the module.
-struct AudioActive;
-
-impl AudioActive {
-    fn enter() -> Self {
-        AUDIO_ACTIVE.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
-}
-
-impl Drop for AudioActive {
-    fn drop(&mut self) {
-        AUDIO_ACTIVE.fetch_sub(1, Ordering::Release);
-    }
-}
-
+/// Run `f` if no other UI callback owns the module.
 fn dispatch<R>(
     slot: &std::sync::Mutex<&'static mut dyn Mod>,
-    how: Dispatch,
     f: impl FnOnce(&mut dyn Mod) -> R,
 ) -> Option<R> {
     let _reentry = Reentry::enter()?;
-    let mut module = match how {
-        Dispatch::Audio => match slot.try_lock() {
-            Ok(module) => module,
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-        },
-        Dispatch::Ui => loop {
-            match slot.try_lock() {
-                Ok(module) => break module,
-                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    // Wait only for an audio callback.  Waiting for another UI
-                    // callback would deadlock a native operation that the
-                    // current UI callback is itself waiting on.
-                    if AUDIO_ACTIVE.load(Ordering::Acquire) == 0 {
-                        return None;
-                    }
-                    std::thread::yield_now();
-                }
-            }
-        },
+    let mut module = match slot.try_lock() {
+        Ok(module) => module,
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
     };
-    let audio = matches!(how, Dispatch::Audio).then(AudioActive::enter);
-    let result = f(&mut **module);
-    // Release the module before clearing the audio marker: a UI callback that
-    // sees the marker must be able to acquire the slot, not merely wait for the
-    // marker to disappear while the lock is still held.
-    drop(module);
-    drop(audio);
-    Some(result)
+    Some(f(&mut **module))
 }
 
 /// Whether every site word matches the tested firmware.
@@ -247,6 +194,8 @@ pub unsafe fn install(module: &'static mut dyn Mod) -> Result<(), InstallError> 
     if !unsafe { sites::install(firmware.base()) } {
         return Err(InstallError::NoHooks);
     }
+    let hooks = module.audio();
+    let _ = AUDIO.set(hooks);
     module.on_start();
     let _ = MODULE.set(std::sync::Mutex::new(module));
     Ok(())
@@ -280,7 +229,7 @@ macro_rules! export_mod {
 mod tests {
     use std::sync::{Arc, Mutex, mpsc};
 
-    use super::{Dispatch, dispatch, firmware_ok};
+    use super::{dispatch, firmware_ok};
     use crate::event::Mod;
 
     #[derive(Default)]
@@ -300,59 +249,12 @@ mod tests {
     #[test]
     fn reentrant_dispatch_is_refused_instead_of_aliasing() {
         let slot: Mutex<&'static mut dyn Mod> = Mutex::new(leaked());
-        let outer = dispatch(&slot, Dispatch::Ui, |_| {
-            assert!(
-                dispatch(&slot, Dispatch::Ui, |_| ()).is_none(),
-                "reentry must see None"
-            );
+        let outer = dispatch(&slot, |_| {
+            assert!(dispatch(&slot, |_| ()).is_none(), "reentry must see None");
             7_u8
         });
         assert_eq!(outer, Some(7));
-        assert_eq!(dispatch(&slot, Dispatch::Ui, |_| 8_u8), Some(8));
-    }
-
-    #[test]
-    fn a_ui_callback_waits_for_an_audio_callback_and_audio_skips() {
-        let slot = Arc::new(Mutex::new(leaked()));
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let holder = {
-            let slot = Arc::clone(&slot);
-            std::thread::spawn(move || {
-                dispatch(&slot, Dispatch::Audio, |_| {
-                    started_tx.send(()).expect("started");
-                    release_rx.recv().expect("release");
-                })
-            })
-        };
-        started_rx.recv().expect("audio callback running");
-
-        // Audio must not wait: it forwards while the slot is owned.
-        assert!(dispatch(&slot, Dispatch::Audio, |_| ()).is_none());
-
-        // UI must wait rather than drop the event.
-        let (done_tx, done_rx) = mpsc::channel();
-        let waiter = {
-            let slot = Arc::clone(&slot);
-            std::thread::spawn(move || {
-                let result = dispatch(&slot, Dispatch::Ui, |_| 9_u8);
-                done_tx.send(result).expect("done");
-            })
-        };
-        assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_millis(100))
-                .is_err(),
-            "the UI callback must still be waiting"
-        );
-        release_tx.send(()).expect("release holder");
-        assert_eq!(
-            done_rx.recv_timeout(std::time::Duration::from_secs(1)),
-            Ok(Some(9_u8)),
-            "the UI callback must run after the audio callback"
-        );
-        holder.join().expect("holder");
-        waiter.join().expect("waiter");
+        assert_eq!(dispatch(&slot, |_| 8_u8), Some(8));
     }
 
     #[test]
@@ -363,7 +265,7 @@ mod tests {
         let holder = {
             let slot = Arc::clone(&slot);
             std::thread::spawn(move || {
-                dispatch(&slot, Dispatch::Ui, |_| {
+                dispatch(&slot, |_| {
                     started_tx.send(()).expect("started");
                     release_rx.recv().expect("release");
                 })
@@ -372,7 +274,7 @@ mod tests {
         started_rx.recv().expect("UI callback running");
         // Waiting here would deadlock a native operation called from the first
         // callback; the second UI callback must be forwarded instead.
-        assert!(dispatch(&slot, Dispatch::Ui, |_| ()).is_none());
+        assert!(dispatch(&slot, |_| ()).is_none());
         release_tx.send(()).expect("release holder");
         holder.join().expect("holder");
     }

@@ -192,6 +192,11 @@ impl Selection {
 
     /// Read this selection's audio, preferring the loaded buffer over its WAV.
     ///
+    /// The selection is a value snapshot, but the read touches the app's sample
+    /// buffer.  A caller that reads off the UI thread must revalidate with
+    /// [`Self::is_current`] before using the result; the UI may replace the
+    /// sample while the read runs.
+    ///
     /// # Errors
     ///
     /// Returns why the audio is unavailable: no exact path, a decode failure, or

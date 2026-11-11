@@ -1,64 +1,73 @@
 # Audio input and output
 
-The SDK taps the device's PCM stream and calls your mod from the audio thread:
+The SDK taps the device's PCM stream and calls the hooks you return from
+`Mod::audio`:
 
 ```rust
-fn on_input_interleaved(&mut self, frames: &[i32], channels: usize, rate: u32);
-fn on_input_planar(&mut self, channels: &[&[i32]], rate: u32);
-fn on_output(&mut self, frames: &mut [i32], info: &OutputInfo);
+#[derive(Clone, Copy, Default)]
+pub struct AudioHooks {
+    pub output: Option<fn(&mut [i32], &OutputInfo)>,
+    pub input_interleaved: Option<fn(&[i32], usize, u32)>,
+    pub input_planar: Option<fn(&[&[i32]], u32)>,
+}
 ```
 
-The samples are **signed 32-bit**. `on_output` is called just before the app
-writes the block; add to `frames` to mix into the output. `on_input_*` is for
+The samples are **signed 32-bit**. `output` is called just before the app writes
+the block; add to `frames` to mix into the output. The input hooks are for
 meters, recording, analysis or a custom effect.
 
 ## The audio-thread rule
 
-These callbacks run on the audio thread. Do not allocate, lock a mutex, draw,
-show a toast, or block. Keep a preallocated scratch buffer in your mod, or write
-into an atomic/ring buffer that the UI reads.
+The hooks run on the audio thread **without the module lock**: the SDK copies
+the function pointers once at install, so a slow UI callback (Extract, a file
+write, a paint) can never drop an audio block. Do not allocate, lock, draw, show
+a toast, or block. Keep any state they touch in atomics or another
+interior-mutable static — never in the mod's `&mut self` UI state.
 
-The SDK holds one exclusive `&mut self` at a time. The audio callback never
-waits: if a UI callback is already inside your mod, the audio callback is
-forwarded without calling it. A UI callback waits for an in-flight audio
-callback so input is not dropped, but it never waits for another UI callback.
-Keep audio callbacks short and never block inside them.
+`Mod::audio` is called once, at install. A mod that returns `AudioHooks::default`
+gets no audio callbacks.
 
 ## Example: mix a quiet tone into the output
 
 ```rust
+use core::sync::atomic::{AtomicU32, Ordering};
 use mpc_sample_sdk::audio::{self, OutputInfo};
-use mpc_sample_sdk::Mod;
+use mpc_sample_sdk::{AudioHooks, Mod};
 
 const MAX_FRAMES: usize = 4096;
 
-#[derive(Default)]
-struct Tone {
-    phase: f32,
-    left: Vec<f32>,
-    right: Vec<f32>,
+/// One turn of the tone, as f32 bits.
+static PHASE: AtomicU32 = AtomicU32::new(0);
+
+fn tone_output(frames: &mut [i32], info: &OutputInfo) {
+    if info.channels == 0 {
+        return;
+    }
+    let count = (frames.len() / info.channels).min(MAX_FRAMES);
+    let step = 440.0 / info.rate as f32;
+    let mut phase = f32::from_bits(PHASE.load(Ordering::Relaxed));
+    let mut left = [0.0_f32; MAX_FRAMES];
+    let mut right = [0.0_f32; MAX_FRAMES];
+    for index in 0..count {
+        let value = (phase * core::f32::consts::TAU).sin() * 0.05;
+        phase = (phase + step).fract();
+        left[index] = value;
+        right[index] = value;
+    }
+    PHASE.store(phase.to_bits(), Ordering::Relaxed);
+    let planes: [&[f32]; 2] = [&left[..count], &right[..count]];
+    let _ = audio::add_planes_i32(frames, info.channels, &planes);
 }
 
-impl Mod for Tone {
-    fn on_start(&mut self) {
-        self.left = vec![0.0; MAX_FRAMES];
-        self.right = vec![0.0; MAX_FRAMES];
-    }
+#[derive(Default)]
+struct Tone;
 
-    fn on_output(&mut self, frames: &mut [i32], info: &OutputInfo) {
-        if info.channels == 0 {
-            return;
+impl Mod for Tone {
+    fn audio(&self) -> AudioHooks {
+        AudioHooks {
+            output: Some(tone_output),
+            ..AudioHooks::default()
         }
-        let count = (frames.len() / info.channels).min(MAX_FRAMES);
-        let step = 440.0 / info.rate as f32;
-        for index in 0..count {
-            let value = (self.phase * core::f32::consts::TAU).sin() * 0.05;
-            self.phase = (self.phase + step).fract();
-            self.left[index] = value;
-            self.right[index] = value;
-        }
-        let planes: [&[f32]; 2] = [&self.left[..count], &self.right[..count]];
-        let _ = audio::add_planes_i32(frames, info.channels, &planes);
     }
 }
 
@@ -72,22 +81,32 @@ unusable geometry.
 ## Reading input
 
 ```rust
-use mpc_sample_sdk::Mod;
+use core::sync::atomic::{AtomicI32, Ordering};
+use mpc_sample_sdk::{AudioHooks, Mod};
 
-#[derive(Default)]
-struct InputMeter {
-    peak: i32,
+/// The last interleaved input block's peak.
+static PEAK: AtomicI32 = AtomicI32::new(0);
+
+fn meter_input(frames: &[i32], _channels: usize, _rate: u32) {
+    let peak = frames.iter().map(|sample| sample.abs()).max().unwrap_or(0);
+    PEAK.store(peak, Ordering::Relaxed);
 }
 
+#[derive(Default)]
+struct InputMeter;
+
 impl Mod for InputMeter {
-    fn on_input_interleaved(&mut self, frames: &[i32], _channels: usize, _rate: u32) {
-        self.peak = frames.iter().map(|sample| sample.abs()).max().unwrap_or(0);
+    fn audio(&self) -> AudioHooks {
+        AudioHooks {
+            input_interleaved: Some(meter_input),
+            ..AudioHooks::default()
+        }
     }
 }
 ```
 
-`on_input_planar` gives one S32 slice per channel when the app uses a planar
-path. Use whichever callback the stream selects; do not assume both run.
+The planar hook gives one S32 slice per channel when the app uses a planar
+path. Use whichever hook the stream selects; do not assume both run.
 
 ## Latency
 
@@ -95,7 +114,7 @@ path. Use whichever callback the stream selects; do not assume both run.
 the source byte the app's display expects:
 
 ```rust
-fn on_output(&mut self, _frames: &mut [i32], info: &mpc_sample_sdk::audio::OutputInfo) {
+fn latency_output(_frames: &mut [i32], info: &mpc_sample_sdk::audio::OutputInfo) {
     let (frames, source) = info.latency(0, mpc_sample_sdk::audio::extra_latency());
     let _ = (frames, source);
 }

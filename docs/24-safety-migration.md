@@ -30,7 +30,7 @@ no `unsafe`; only the firmware boundary does.
 | `page::set_screen` / `draw::set_screen` | removed from the public API | a mod could point the repaint at an arbitrary component |
 | `NoteEvent` | now `NoteEvent<'_>`; `event` is private | the event is borrowed, exclusively, for the callback |
 | `Mod` | now requires `Send` | the SDK stores one module behind an exclusive dispatch slot |
-| `loader::with_mod` / `with_mod_audio` | split UI and audio dispatch | UI waits only for audio; audio never waits; UI never waits for UI; reentry forwards |
+| `loader::with_mod` / `with_mod_audio` | `with_mod` plus `Mod::audio` hooks | audio never takes the module slot; UI never waits for audio and forwards if another UI owns it; reentry forwards |
 | `paths::for_sample` | no longer scans temporary projects | a geometry match does not prove recording identity |
 | `paths::for_recording` | new explicit recording context | searches only the recording's own project directory |
 | `hook::install` / `hook::seal` | renamed to `hook::prepare` / `hook::commit` | installation is prepare → seal → publish, with rollback |
@@ -39,14 +39,23 @@ no `unsafe`; only the firmware boundary does.
 `page::chop_mode` and `draw::toast_line` were already `unsafe`; their contracts
 are unchanged.
 
+## v0.3.0: audio hooks
+
+`Mod::audio` now returns the audio hooks as function pointers, copied once at
+install.  Audio callbacks never take the module lock; a slow UI callback can no
+longer drop an audio block.  Replace `on_output`/`on_input_*` with the matching
+`AudioHooks` fields; the functions are free functions over atomics, not methods
+on `&mut self`.
+
 ## Dispatch and reentrancy
 
-Audio and UI callbacks share one module slot, but they wait differently:
+Audio and UI no longer share one module slot:
 
-* **Audio** never blocks. If a UI callback owns the slot, the audio callback is
-  forwarded without calling the mod.
-* **UI** waits for an audio callback to finish, so encoder turns and button
-  presses are not dropped.
+* **Audio** calls the function pointers from `Mod::audio`, copied once at
+  install. It never takes the module lock, so a slow UI callback cannot drop an
+  audio block.
+* **UI** takes the slot without waiting. Audio never owns it, so there is
+  nothing to wait for.
 * **UI never waits for another UI callback.** A native operation called from
   `on_paint` may itself be waiting for that callback; the second one is
   forwarded instead, which avoids a lock-inversion deadlock.
@@ -64,9 +73,9 @@ fn on_pad(&mut self, event: PadEvent) -> PadFlow {
 ```
 
 Do not block inside an audio callback: it must return to the device. Publish
-results to the UI through atomics or a synchronized queue, as before. Call
-`with_mod_audio` from the audio taps and `with_mod` from UI hooks; the SDK does
-this internally.
+results to the UI through atomics or a synchronized queue, as before. The SDK
+calls the `AudioHooks` function pointers from the audio taps and `with_mod` from
+UI hooks, so a mod never sees the dispatch.
 
 The input and output audio taps are serialised independently, so a blocking
 output `writei` does not suppress the input callback.

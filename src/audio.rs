@@ -349,7 +349,9 @@ pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u6
             // SAFETY: the audio thread updates the peak after each write.
             output_peak_bits: unsafe { G_OUT_PEAK_BITS },
         };
-        crate::loader::with_mod_audio(|module| module.on_output(samples, &info));
+        if let Some(hook) = crate::loader::audio_hooks().output {
+            hook(samples, &info);
+        }
     }
     // SAFETY: the app's own writer takes these.
     let written = unsafe { write(pcm, buffer.cast::<u8>(), size) };
@@ -564,9 +566,9 @@ pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) 
             if !buffer.is_null() && input_usable(frames, size, G_IN_CH, G_IN_S32) {
                 let channels = G_IN_CH as usize;
                 let samples = core::slice::from_raw_parts(buffer.cast_const(), frames * channels);
-                crate::loader::with_mod_audio(|module| {
-                    module.on_input_interleaved(samples, channels, IN_RATE.load(Ordering::Acquire));
-                });
+                if let Some(hook) = crate::loader::audio_hooks().input_interleaved {
+                    hook(samples, channels, IN_RATE.load(Ordering::Acquire));
+                }
             }
         }
     }
@@ -727,10 +729,10 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
         planes[live] = unsafe { core::slice::from_raw_parts(pointer.cast_const(), frames) };
         live += 1;
     }
-    if live != 0 {
-        crate::loader::with_mod_audio(|module| {
-            module.on_input_planar(&planes[..live], IN_RATE.load(Ordering::Acquire));
-        });
+    if live != 0
+        && let Some(hook) = crate::loader::audio_hooks().input_planar
+    {
+        hook(&planes[..live], IN_RATE.load(Ordering::Acquire));
     }
     got
 }

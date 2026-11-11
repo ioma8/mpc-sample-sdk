@@ -107,9 +107,9 @@ let installed = mpc_sample_sdk::loader::with_mod(|module| {
 }).is_some();
 ```
 
-It waits for an in-flight audio callback, but never waits for another UI
+It never waits for audio: the audio hooks are function pointers copied at
+install and do not take the module slot. It also never waits for another UI
 callback: if another UI closure owns the slot, it returns `None` so the hook can
-forward. `loader::with_mod_audio` is the audio-thread variant: it returns `None`
-instead of blocking. Both are mainly for SDK diagnostics and tests; from a mod
-callback, use `self`. See the [v0.2.0 migration guide](24-safety-migration.md)
-for the full dispatch policy.
+forward. `loader::with_mod_audio` no longer exists. `with_mod` is mainly for SDK
+diagnostics and tests; from a mod callback, use `self`. See the
+[v0.2.0 migration guide](24-safety-migration.md) for the full dispatch policy.

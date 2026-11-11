@@ -167,6 +167,26 @@ pub struct PaintEvent {
     pub chop_mode: bool,
 }
 
+/// A planar input hook: one slice per channel, then the rate.
+pub type InputPlanar = fn(&[&[i32]], u32);
+
+/// The audio-side hooks, copied out of the mod at install.
+///
+/// They run on the audio thread **without** the module lock, so they must only
+/// touch atomics or other interior-mutable state.  They must never use the
+/// mod's `&mut self` UI state, and they must not block or allocate.  They also
+/// run without a per-thread reentry marker: do not call a hooked app site or
+/// [`crate::loader::with_mod`] from an audio hook.
+#[derive(Clone, Copy, Default)]
+pub struct AudioHooks {
+    /// Interleaved S32 output is about to be written; a hook may mix into it.
+    pub output: Option<fn(&mut [i32], &crate::audio::OutputInfo)>,
+    /// Interleaved S32 input arrived from the device.
+    pub input_interleaved: Option<fn(&[i32], usize, u32)>,
+    /// Planar S32 input arrived from the device, one slice per channel.
+    pub input_planar: Option<InputPlanar>,
+}
+
 /// A mod built on this SDK.
 ///
 /// Every method has a default, so a mod overrides only what it needs.  The SDK
@@ -175,7 +195,9 @@ pub struct PaintEvent {
 ///
 /// The app dispatches from several threads, so the module must be `Send`.  The
 /// SDK still guarantees one exclusive `&mut self` at a time; an overlapping or
-/// reentrant callback is forwarded without invoking the mod.
+/// reentrant UI callback is forwarded without invoking the mod.  [`Mod::audio`]
+/// is copied out once at install and its function pointers run on the audio
+/// thread without the module lock.
 pub trait Mod: Send + 'static {
     /// The hooks are installed and the firmware has been verified.
     fn on_start(&mut self) {}
@@ -224,14 +246,13 @@ pub trait Mod: Send + 'static {
     /// whether it was the Sample page.
     fn on_paint(&mut self, _graphics: &mut Graphics, _event: PaintEvent) {}
 
-    /// Interleaved S32 input arrived from the device.
-    fn on_input_interleaved(&mut self, _frames: &[i32], _channels: usize, _rate: u32) {}
-
-    /// Planar S32 input arrived from the device, one slice per channel.
-    fn on_input_planar(&mut self, _channels: &[&[i32]], _rate: u32) {}
-
-    /// Interleaved S32 output is about to be written; a mod may mix into it.
-    fn on_output(&mut self, _frames: &mut [i32], _info: &crate::audio::OutputInfo) {}
+    /// The audio-side hooks, called on the audio thread without the module lock.
+    ///
+    /// They are copied out once at install; return only functions that read and
+    /// write atomics or other interior-mutable state.
+    fn audio(&self) -> AudioHooks {
+        AudioHooks::default()
+    }
 }
 
 /// Whether SHIFT is held, tracked by the SDK from the button hook.
