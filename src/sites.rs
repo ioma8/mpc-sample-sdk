@@ -392,7 +392,7 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
         // SAFETY: and its value at +9.
         u32::from(unsafe { *(event as *const u8).add(9) })
     };
-    let pressed = value == 0x7f;
+    let pressed = value == event::button::PRESSED;
     // The event's first word is its context; `+0x10` there is the surface.
     let surface = if event == 0 {
         0
@@ -419,10 +419,10 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
     let flow = with_mod(|module| module.on_button(message)).unwrap_or(ButtonFlow::Forward);
     // Track the hold state after the mod has seen the event, so it sees the
     // state that was in effect when the key was pressed.
-    if code == 0x31 {
+    if code == event::button::SHIFT {
         event::set_shift(pressed);
     }
-    if code == 0x09 {
+    if code == event::button::ERASE {
         event::set_erase(pressed);
     }
     if flow == ButtonFlow::Forward {

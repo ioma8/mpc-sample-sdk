@@ -5,6 +5,42 @@
 //! app's own original call is the SDK's job, so a mod never stores or types a
 //! displaced function.
 
+/// Hardware button codes reported by the control surface.
+pub mod button {
+    /// SHIFT.
+    pub const SHIFT: u32 = 0x31;
+    /// ERASE.
+    pub const ERASE: u32 = 0x09;
+    /// DATA encoder press.
+    pub const DATA: u32 = 0x6f;
+    /// B3.
+    pub const B3: u32 = 0x0e;
+    /// PLUS.
+    pub const PLUS: u32 = 0x36;
+    /// MINUS.
+    pub const MINUS: u32 = 0x37;
+    /// 16 LEVELS.
+    pub const LEVELS: u32 = 0x28;
+    /// CHOP.
+    pub const CHOP: u8 = 0x4b;
+    /// Raw button press value.
+    pub const PRESSED: u32 = 0x7f;
+}
+
+/// Control-surface controller numbers.
+pub mod cc {
+    /// Master volume.
+    pub const MASTER: u16 = 0x13;
+    /// Knob 1.
+    pub const KNOB1: u16 = 0x10;
+    /// Knob 2.
+    pub const KNOB2: u16 = 0x11;
+    /// Knob 3.
+    pub const KNOB3: u16 = 0x12;
+    /// DATA encoder.
+    pub const DATA: u16 = 0x64;
+}
+
 use core::ffi::CStr;
 
 use crate::draw::Graphics;
@@ -60,6 +96,19 @@ pub struct SurfaceEvent {
     pub note: u8,
     /// The payload's velocity byte.
     pub velocity: u8,
+}
+
+impl SurfaceEvent {
+    /// Whether this is a pad note or pressure event.
+    #[must_use]
+    pub const fn is_pad_event(&self) -> bool {
+        matches!(self.kind, 0x80 | 0x90 | 0xa0)
+    }
+    /// Whether this is a nonzero-velocity pad press.
+    #[must_use]
+    pub const fn is_pad_press(&self) -> bool {
+        self.kind == 0x90 && self.velocity > 0
+    }
 }
 
 /// What the mod wants done with a control-surface event.

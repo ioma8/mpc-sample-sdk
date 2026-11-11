@@ -17,6 +17,8 @@ pub struct ButtonEvent {
 }
 ```
 
+Use the named constants in `mpc_sample_sdk::event::button`; `code` remains available for raw device codes.
+
 ## Key codes used by the stock app
 
 | code | key |
@@ -39,11 +41,11 @@ struct Buttons;
 
 impl Mod for Buttons {
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
-        if event.code == 0x6f && event.pressed && event.shift {
+        if event.code == mpc_sample_sdk::event::button::DATA && event.pressed && event.shift {
             mpc_sample_sdk::draw::show_toast("SHIFT + DATA");
             return ButtonFlow::Consume;
         }
-        if event.code == 0x31 {
+        if event.code == mpc_sample_sdk::event::button::SHIFT {
             mpc_sample_sdk::platform::status::set_status(if event.pressed {
                 "SHIFT down"
             } else {
@@ -72,10 +74,10 @@ struct Replay;
 
 impl Mod for Replay {
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
-        if event.code == 0x6f && event.pressed {
+        if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             // SAFETY: `event` was captured in this callback, so its context and
             // surface are still live while we replay it.
-            let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event.bytes, 0x4b) };
+            let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
         }
         ButtonFlow::Forward
     }

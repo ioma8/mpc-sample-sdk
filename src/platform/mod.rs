@@ -12,6 +12,7 @@ pub mod pads;
 pub mod page;
 pub mod paths;
 pub mod sample;
+pub mod seed;
 pub mod selection;
 pub mod slice;
 pub mod status;

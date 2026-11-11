@@ -25,10 +25,10 @@ struct Knobs {
 
 impl Mod for Knobs {
     fn on_cc(&mut self, event: CcEvent) -> CcFlow {
-        let index = match event.control {
-            0x10 => 0,
-            0x11 => 1,
-            0x12 => 2,
+        let index = match u16::try_from(event.control).unwrap_or(u16::MAX) {
+            mpc_sample_sdk::event::cc::KNOB1 => 0,
+            mpc_sample_sdk::event::cc::KNOB2 => 1,
+            mpc_sample_sdk::event::cc::KNOB3 => 2,
             _ => return CcFlow::Forward,
         };
         let normalized = if event.range > 0.0 {
@@ -48,8 +48,8 @@ impl Mod for Knobs {
 mpc_sample_sdk::export_mod!(Knobs);
 ```
 
-The numbers `0x10..=0x12` are examples. Use the controller numbers your app
-actually sends; log `event.control` first if you are unsure.
+Named controller numbers are available in `mpc_sample_sdk::event::cc`. The
+raw `event.control` remains available for other controller numbers.
 
 ## Keep the app's value in sync
 
@@ -63,7 +63,7 @@ struct Observe;
 
 impl Mod for Observe {
     fn on_cc(&mut self, event: CcEvent) -> CcFlow {
-        if event.control == 0x10 {
+        if event.control == u32::from(mpc_sample_sdk::event::cc::KNOB1) {
             mpc_sample_sdk::platform::status::set_status(&format!("raw {}", event.value));
         }
         CcFlow::Forward

@@ -7,7 +7,7 @@
 //! and the command, so this is the supported way to create a pad.
 //!
 //! The SDK owns the two command hooks (constructor and execute), the writer, and
-//! the wait for the executor; a mod only describes the request.
+//! the command lifetime; a mod only describes the request.
 
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +21,6 @@ use crate::platform::writer;
 const RANGE_START: usize = 0x78;
 /// Where it keeps the range end.
 const RANGE_END: usize = 0xd0;
-/// How long the writer may take, in milliseconds.
-const WRITER_TIMEOUT_MS: u32 = 3_000;
 /// The app's Extract handler.
 const EXTRACT_HANDLER: usize = 0x0165_80d0;
 /// `[state + 0x2310]` is the app's program object.
@@ -55,6 +53,20 @@ pub struct Request<'a> {
     pub destination: Option<i32>,
 }
 
+/// Generated audio to write to an explicit pad. Existing pad contents are overwritten.
+pub struct Generated<'a> {
+    /// Live Sample page on its UI thread.
+    pub screen: usize,
+    /// Native name for the generated sample.
+    pub name: &'static CStr,
+    /// Interleaved floating-point audio.
+    pub audio: &'a [f32],
+    /// Number of interleaved channels (one or two).
+    pub channels: u32,
+    /// Destination pad index, from 0 through 127.
+    pub destination: i32,
+}
+
 /// The pad the app assigned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Extracted {
@@ -71,6 +83,8 @@ pub enum ExtractError {
     NoProgram,
     /// The app did not assign a pad, or its writer did not consume the buffer.
     NotApplied,
+    /// The temporary source was used but its original layer could not be restored.
+    RestoreFailed,
 }
 
 impl core::fmt::Display for ExtractError {
@@ -79,6 +93,7 @@ impl core::fmt::Display for ExtractError {
             Self::Invalid => f.write_str("invalid extract range"),
             Self::NoProgram => f.write_str("no program on this page"),
             Self::NotApplied => f.write_str("the app did not assign a pad"),
+            Self::RestoreFailed => f.write_str("the original sample layer could not be restored"),
         }
     }
 }
@@ -225,17 +240,18 @@ pub unsafe extern "C" fn exec_entry(command: usize) -> i32 {
     let Some(operation) = operation else {
         return forward_execute(command, execute);
     };
-    let Ok(_guard) = EXECUTION.try_lock() else {
-        // Another command owns the substitution slot.  Forward this one
-        // unchanged so the app still runs, and retire this operation: it will
-        // never receive a substituted writer.
-        operation.finished.store(true, Ordering::Release);
-        return forward_execute(command, execute);
-    };
     if operation.executing.swap(true, Ordering::AcqRel) {
-        operation.finished.store(true, Ordering::Release);
+        // The first invocation owns completion; a nested invocation must not
+        // release resources while that invocation is still live.
         return forward_execute(command, execute);
     }
+    let Ok(_guard) = EXECUTION.try_lock() else {
+        // A different operation owns the writer. Forward this command unchanged,
+        // and report completion only after its native execution returns.
+        let status = forward_execute(command, execute);
+        operation.finished.store(true, Ordering::Release);
+        return status;
+    };
     // SAFETY: command and method belong to this native hook invocation.
     let status = unsafe { run_command(command, &operation, execute) };
     operation.finished.store(true, Ordering::Release);
@@ -326,25 +342,11 @@ unsafe fn run_command(
         }
         return -1;
     }
-    // The buffer stays armed until this operation's writer has consumed every
-    // frame; only then is it cleared, and the byte count is confirmed by the
-    // callback counter.  A timeout reports failure but still waits for any
-    // in-flight callback before this operation may release its audio.
+    // The native writer consumes each descriptor synchronously on this thread.
+    // Once execute returns, sleeping here cannot advance its substitution plan.
     let wrote = match arm_id {
         None => arm.buffer.is_none(),
-        Some(id) => {
-            let total = writer::total_frames(id).unwrap_or(0);
-            let mut consumed = writer::position(id).unwrap_or(0);
-            let mut spent = 0;
-            while consumed < total && spent < WRITER_TIMEOUT_MS {
-                std::thread::sleep(core::time::Duration::from_millis(1));
-                spent += 1;
-                consumed = writer::position(id).unwrap_or(consumed);
-            }
-            writer::clear_if(id);
-            let idle = writer::wait_idle(WRITER_TIMEOUT_MS);
-            total > 0 && consumed == total && idle
-        }
+        Some(id) => writer::finish(id),
     };
     operation.wrote.store(wrote, Ordering::Release);
     status
@@ -371,14 +373,29 @@ fn write_u64(address: usize, value: u64) -> bool {
 /// on the command executor thread and consume each block before returning.
 ///
 /// With a buffer the writer substitutes it; without one the app copies its own
-/// range.  The call blocks until the app has assigned a pad (or three seconds
-/// have passed), because the command may run on an executor thread.
+/// range. The tested firmware executes the native command synchronously. The
+/// handler itself can block; this API cannot interrupt a native call.
 ///
 /// # Errors
 ///
 /// Returns [`ExtractError`] when the request is unusable, the page has no
 /// program, or the app did not assign a pad.
 pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
+    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
+    // SAFETY: forwarded from this function's caller.
+    unsafe { run_inner(request, false) }
+}
+
+/// Keep borrowed native state alive until a constructed command returns.
+fn wait_for_completion(operation: &Operation) {
+    if !lock(&operation.commands).is_empty() {
+        while !operation.finished.load(Ordering::Acquire) {
+            std::thread::sleep(core::time::Duration::from_millis(1));
+        }
+    }
+}
+
+unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, ExtractError> {
     if request.screen == 0
         || request.start >= request.end
         || request.end > request.source_frames
@@ -392,7 +409,6 @@ pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
     {
         return Err(ExtractError::Invalid);
     }
-    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
     if lock(&OPERATION)
         .as_ref()
         .is_some_and(|operation| !operation.finished.load(Ordering::Acquire))
@@ -444,28 +460,20 @@ pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
             core::mem::transmute(image::base() + EXTRACT_HANDLER);
         handler(request.screen);
     }
-    let mut after = before;
-    let mut target_changed = false;
-    for _ in 0..3000 {
-        if let Some(pad) = request.destination {
-            target_changed = pads::sample_for_pad(program, pad) != before_target;
-            if target_changed && operation.finished.load(Ordering::Acquire) {
-                break;
-            }
-        } else if after != before && operation.finished.load(Ordering::Acquire) {
-            break;
-        }
-        std::thread::sleep(core::time::Duration::from_millis(1));
-        // SAFETY: same live program as above.
-        after = unsafe { pads::free_count(program) };
+    // The tested firmware constructs and executes the command inside the
+    // handler. Retain the seed if a constructed command is still pending;
+    // older device observations did not establish the same execution order.
+    if borrowed {
+        wait_for_completion(&operation);
     }
     let assigned = match request.destination {
-        Some(_) => target_changed,
-        None => after != before,
+        Some(pad) => pads::sample_for_pad(program, pad) != before_target,
+        // SAFETY: the caller still holds the live program on the UI thread.
+        None => (unsafe { pads::free_count(program) }) != before,
     };
     let finished = operation.finished.load(Ordering::Acquire);
-    // A running/queued operation remains published and owns its audio after a
-    // timeout. Another run is refused until its executor reports completion.
+    // A constructed command that is still running retains its audio and blocks
+    // another operation until it reports completion.
     if finished || lock(&operation.commands).is_empty() {
         *lock(&OPERATION) = None;
     }
@@ -479,9 +487,148 @@ pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
     }
 }
 
+/// Write generated audio using a native seed and restore the source afterward.
+///
+/// # Safety
+/// `screen` and the recorded control surface must be live on the owning UI
+/// thread throughout the call, with exclusive access to the page and program.
+/// The native writer must satisfy [`run`]'s synchronous callback contract.
+///
+/// # Errors
+/// Returns an error for invalid audio, an unavailable page or seed, or a failed
+/// extraction. This can block indefinitely if the native call hangs; see
+/// [`run_seeded`]. The destination is overwritten on success.
+pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractError> {
+    let channels = usize::try_from(request.channels).map_err(|_| ExtractError::Invalid)?;
+    if !(1..=2).contains(&channels)
+        || request.audio.is_empty()
+        || !request.audio.len().is_multiple_of(channels)
+        || !(0..128).contains(&request.destination)
+    {
+        return Err(ExtractError::Invalid);
+    }
+    let frames =
+        u32::try_from(request.audio.len() / channels).map_err(|_| ExtractError::Invalid)?;
+    let state = super::selection::page_state(request.screen).ok_or(ExtractError::NoProgram)?;
+    let seeded = Request {
+        screen: request.screen,
+        state,
+        name: request.name,
+        buffer: Some(request.audio),
+        source_frames: frames,
+        channels: request.channels,
+        start: 0,
+        end: frames,
+        destination: Some(request.destination),
+    };
+    // SAFETY: the caller supplies the live objects and writer contract.
+    unsafe { run_seeded(&seeded) }
+}
+
+/// Extract generated audio using a temporary native seed, restoring the original
+/// layer and removing any extra seed copies before returning.
+///
+/// # Safety
+/// The page, state and control surface must remain live and exclusive on the UI
+/// thread, and the native writer must satisfy [`run`]'s callback requirements.
+/// If a constructed command is still pending after the handler returns, this
+/// call waits for it before restoring the seed. A stuck native handler or pending
+/// command can therefore block this UI-thread call indefinitely.
+///
+/// # Errors
+/// Returns an error if the seed cannot be borrowed or the extraction fails.
+pub unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
+    let destination = request.destination.ok_or(ExtractError::Invalid)?;
+    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
+    if lock(&OPERATION)
+        .as_ref()
+        .is_some_and(|operation| !operation.finished.load(Ordering::Acquire))
+    {
+        return Err(ExtractError::NotApplied);
+    }
+    // SAFETY: the caller supplies the live page and exclusive UI access.
+    let (state, frames) =
+        unsafe { super::seed::seed_provider(request.screen) }.ok_or(ExtractError::NotApplied)?;
+    let result = if state == request.state {
+        let seeded = Request {
+            screen: request.screen,
+            state,
+            name: request.name,
+            buffer: request.buffer,
+            source_frames: frames,
+            channels: request.channels,
+            start: request.start,
+            end: request.end,
+            destination: request.destination,
+        };
+        // SAFETY: the same live page and writer contract apply to the seed.
+        unsafe { run_inner(&seeded, true) }
+    } else {
+        Err(ExtractError::NoProgram)
+    };
+    // SAFETY: cleanup runs on the same UI thread before the page can change.
+    if !unsafe { super::seed::finish(destination) } {
+        return Err(ExtractError::RestoreFailed);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExtractError, RANGE_END, RANGE_START, Request};
+    use super::{
+        Arm, ExtractError, Generated, Operation, RANGE_END, RANGE_START, Request, generated,
+        wait_for_completion,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn generated_audio_rejects_invalid_geometry_before_touching_the_firmware() {
+        let audio = [0.0; 3];
+        let request = Generated {
+            screen: 0,
+            name: c"test",
+            audio: &audio,
+            channels: 2,
+            destination: 0,
+        };
+        // SAFETY: invalid geometry is rejected without accessing firmware.
+        assert_eq!(unsafe { generated(&request) }, Err(ExtractError::Invalid));
+    }
+
+    #[test]
+    fn borrowed_source_stays_live_until_queued_command_finishes() {
+        let operation = Arc::new(Operation {
+            arm: Arm::default(),
+            source: 0,
+            commands: Mutex::new(vec![1]),
+            executing: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            wrote: AtomicBool::new(false),
+        });
+        let (started_tx, started_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let worker_op = Arc::clone(&operation);
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            wait_for_completion(&worker_op);
+            returned_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            returned_rx
+                .recv_timeout(std::time::Duration::from_millis(25))
+                .is_err()
+        );
+        operation.finished.store(true, Ordering::Release);
+        returned_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn the_range_slots_are_the_apps() {

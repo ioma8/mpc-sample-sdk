@@ -49,10 +49,11 @@ match unsafe { extract::run(&request) } {
 app should copy. The buffer may be longer than the range for an effect tail; the
 SDK's writer substitutes it block by block.
 
-The SDK copies the rendered buffer into an owned `Arc` and keeps it alive until
-the app's writer reports every frame and the callback counter is idle. A timeout
-returns `NotApplied` without freeing audio that an in-flight callback may still
-be reading; the operation stays published until its executor reports completion.
+The SDK copies the rendered buffer into an owned `Arc`. The writer substitutes
+on the command thread and requires the native callback to consume each block
+before returning. After the native execute method returns, the SDK checks the
+frame count and callback state once; it reports `NotApplied` if they do not show
+a complete write. In-flight callbacks retain their own audio reference.
 
 `destination` controls where the new sample lands:
 
@@ -61,10 +62,34 @@ be reading; the operation stays published until its executor reports completion.
   holds a sample or is empty. The SDK patches and restores the native command’s
   destination around execute.
 
-When `destination` is set, no free pad is required. For an empty page, provide a
-populated source sample for the Extract range; the destination can still be the
-empty pad. The source is only used to drive the command, not to shape the
+When `destination` is set, no free pad is required. For `run` on an empty page, provide a populated source sample for the Extract
+range; `generated` instead supplies a temporary native seed. The source is only used to drive the command, not to shape the
 generated audio.
+
+## Generated audio without a source sample
+
+Use `extract::generated` for a generated buffer on a specific destination pad.
+It validates audio geometry, temporarily borrows the SDK's native seed, runs
+Extract and restores the previous sample and holder. The destination is
+overwritten, so choose a free pad first if existing audio must be preserved.
+
+```rust
+use mpc_sample_sdk::platform::extract::{self, Generated};
+
+fn write_generated(screen: usize, audio: &[f32], destination: i32) {
+    let request = Generated { screen, name: c"Generated", audio, channels: 2, destination };
+    // SAFETY: the caller must supply the live Sample page and control surface
+    // on the UI thread, with exclusive access to the page and program.
+    let _ = unsafe { extract::generated(&request) };
+}
+```
+
+The command is constructed synchronously by the firmware handler. If it has
+still pending after the handler returns, the seeded call waits for it to finish
+before restoring the native layer. A stuck native call or pending command can
+therefore block the UI indefinitely. The SDK does not poll for an assignment or
+writer callback after a synchronous command has returned. Raw `Request`,
+`run`, and `run_seeded` remain available for custom ranges and source behavior.
 
 ## Check room first
 
@@ -97,13 +122,14 @@ cannot prove there is room.
 - **Synth:** the take may be longer or shorter than the source. Set `end` from
   the rendered frame count so the result does not inherit the source length.
   Use `destination: Some(selected_pad)` to overwrite the current pad; the source
-  sample is only a provider for Extract. If the current page is empty, seed the
-  command with any populated layer sample and keep the empty pad as the
-  destination.
+  sample is only a provider for Extract. On an empty page, use `generated` to
+  supply the temporary native seed.
 - **HPSS:** run Extract twice, once for each part; check `pads::has_room` for
   two pads before rendering.
 
-`extract::run` may block for up to about three seconds while the app assigns the
-pad. With `destination: Some(_)`, success is detected by the destination pad’s
-sample changing, not by the free-pad count. Do not call it from a paint callback for a large job; use the task pattern
-and keep the UI showing progress.
+`extract::run` invokes the native handler on the UI thread and may block for as
+long as that call takes; the SDK cannot interrupt it. With `destination:
+Some(_)`, success is detected by the destination pad's sample changing, not by
+the free-pad count. Use a worker for rendering and file reads, then commit on
+the UI thread; this reduces work before the native call but does not make the
+native commit asynchronous.

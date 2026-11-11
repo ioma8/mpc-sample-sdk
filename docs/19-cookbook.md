@@ -10,8 +10,7 @@ use mpc_sample_sdk::{
     ButtonEvent, ButtonFlow, Mod, PadAction, PadEvent, PadFlow, PaintEvent,
 };
 
-const KEY_SHIFT: u32 = 0x31;
-const KEY_DATA: u32 = 0x6f;
+use mpc_sample_sdk::event::button;
 
 #[derive(Default)]
 struct MyMod {
@@ -24,10 +23,10 @@ impl Mod for MyMod {
     }
 
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
-        if event.code == KEY_SHIFT {
+        if event.code == button::SHIFT {
             return ButtonFlow::Forward;
         }
-        if event.code == KEY_DATA && event.pressed && event.shift {
+        if event.code == button::DATA && event.pressed && event.shift {
             self.open = !self.open;
             if self.open {
                 status::set_status("MyMod open");

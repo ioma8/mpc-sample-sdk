@@ -51,8 +51,7 @@ pub struct Edges {
 
 /// Find the audible bounds of `path`, scanning `frames` interleaved frames.
 ///
-/// `ratio` overrides the relative threshold (0.0 means "use the default, or
-/// `MINIMOD_TRIM_DB` when it is set").
+/// `ratio` overrides the relative threshold (0.0 means use the default).
 #[must_use]
 pub fn edges(path: &Path, layout: Layout, frames: u32, ratio: f64) -> Option<Edges> {
     if frames == 0
@@ -97,13 +96,7 @@ fn threshold_for(peak: i32, ratio: f64) -> i32 {
     let ratio = if ratio > 0.0 {
         ratio
     } else {
-        let db = std::env::var("MINIMOD_TRIM_DB")
-            .ok()
-            .and_then(|text| text.trim().parse::<f64>().ok())
-            .filter(|value| value.is_finite())
-            .unwrap_or(DEFAULT_DB)
-            .clamp(-90.0, -6.0);
-        10.0_f64.powf(db / 20.0)
+        10.0_f64.powf(DEFAULT_DB / 20.0)
     };
     if peak == 0 {
         return 328;

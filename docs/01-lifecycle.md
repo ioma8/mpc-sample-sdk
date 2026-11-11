@@ -51,7 +51,7 @@ struct Demo;
 
 impl Mod for Demo {
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
-        if event.code == 0x6f && event.pressed {
+        if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             mpc_sample_sdk::draw::show_toast("DATA pressed");
         }
         ButtonFlow::Forward

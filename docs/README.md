@@ -42,8 +42,8 @@ Every page has a runnable-shaped example. The examples assume:
 crate-type = ["cdylib"]
 
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.1" }
-# v0.2.0 is API-breaking; see 24-safety-migration.md.
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", branch = "main" }
+# Pin a reviewed commit or release tag in production.
 ```
 
 A mod is installed by `export_mod!`, built as a `cdylib`, and loaded with

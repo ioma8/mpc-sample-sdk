@@ -92,6 +92,14 @@ pub(crate) fn clear_if(id: ArmId) {
     }
 }
 
+/// Finish a synchronous substitution and report whether every frame was used.
+pub(crate) fn finish(id: ArmId) -> bool {
+    let total = total_frames(id).unwrap_or(0);
+    let consumed = position(id).unwrap_or(0);
+    clear_if(id);
+    total > 0 && consumed == total && wait_idle(0)
+}
+
 /// The app's writer signature: closure plus the block descriptor.
 pub type Writer = unsafe extern "C" fn(usize, usize);
 
@@ -220,7 +228,9 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{ArmId, arm_owned, clear, clear_if, position, total_frames, wait_idle, write};
+    use super::{
+        ArmId, arm_owned, clear, clear_if, finish, position, total_frames, wait_idle, write,
+    };
 
     /// The plan is process-wide, so the tests that arm it serialise.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -270,6 +280,16 @@ mod tests {
         assert!(CONSUMED.load(Ordering::Acquire));
         assert_eq!((block.frames, block.pointer), (2, 123));
         assert!(wait_idle(0));
+    }
+
+    #[test]
+    fn an_incomplete_synchronous_write_fails_without_waiting() {
+        let _serial = serial();
+        let id = arm_owned(std::sync::Arc::from([1.0_f32; 4]), 4, 1).expect("armed");
+        let start = std::time::Instant::now();
+        assert!(!finish(id));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(position(id), None);
     }
 
     #[test]

@@ -113,9 +113,11 @@ callback on the same executor thread *before* the command's own first callback
 cannot be distinguished; the plan is armed immediately before execute to keep
 that window as small as the firmware allows.
 
-`extract::run` keeps the rendered buffer alive until the writer reports every
-frame and no callback remains in flight; a timeout reports `NotApplied` and keeps
-the operation published rather than freeing audio the executor may still use.
+`extract::run` owns the rendered buffer. Each in-flight callback also retains
+its own reference. After native execute returns, the SDK checks the consumed
+frame count and callback state without polling; an incomplete write reports
+`NotApplied`. The seeded path waits for a constructed pending command before
+restoring the temporary source.
 
 ## Hook installation
 

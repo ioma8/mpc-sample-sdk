@@ -7,6 +7,13 @@
 use crate::image;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Firmware operation for clearing a pad.
+pub const PAD_CLEAR: i32 = 0x40d;
+/// Firmware operation for the trim start frame.
+pub const TRIM_START: i32 = 0x462;
+/// Firmware operation for the exclusive trim end frame.
+pub const TRIM_END: i32 = 0x466;
+
 /// The app's control setter, as the page's knobs call it.
 pub type SetControl = unsafe extern "C" fn(usize, usize, i32, i32, f32) -> usize;
 
@@ -79,6 +86,38 @@ pub fn original() -> Option<SetControl> {
     let address = ORIGINAL.load(Ordering::Acquire);
     // SAFETY: record requires the matching native setter signature.
     (address != 0).then(|| unsafe { core::mem::transmute::<usize, SetControl>(address) })
+}
+
+/// Clear a pad through the native control surface.
+///
+/// # Safety
+/// The remembered surface must be live on the UI thread and `pad` valid.
+pub unsafe fn clear_pad(pad: i32) {
+    // SAFETY: guaranteed by the caller.
+    let _ = unsafe { set(pad, PAD_CLEAR, 0.0) };
+}
+
+/// Set the exclusive trim end on the remembered surface. Frame values above
+/// 2^24 may be rounded by the firmware's floating-point control API.
+///
+/// # Safety
+/// The remembered surface must be live on the UI thread and `pad` valid.
+pub unsafe fn set_trim_end(pad: i32, end: u32) {
+    // SAFETY: guaranteed by the caller.
+    let _ = unsafe { set(pad, TRIM_END, end as f32) };
+}
+
+/// Set trim bounds using the ordering expected by the firmware.
+///
+/// # Safety
+/// Both objects must be live on the UI thread, with a valid pad and bounds.
+pub unsafe fn set_trim(control: usize, surface: usize, pad: i32, first: u32, end: u32) {
+    // SAFETY: guaranteed by the caller; reset start before changing end.
+    unsafe {
+        let _ = apply(control, surface, pad, TRIM_START, 0.0);
+        let _ = apply(control, surface, pad, TRIM_END, end as f32);
+        let _ = apply(control, surface, pad, TRIM_START, first as f32);
+    }
 }
 
 /// Apply one control op to an explicit surface and context.
