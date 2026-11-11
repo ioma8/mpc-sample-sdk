@@ -58,7 +58,7 @@ The crate is published from this repository:
 
 ```toml
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.1.10" }
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.0" }
 ```
 
 A mod builds as a `cdylib`:
@@ -147,9 +147,9 @@ firmware effects, the bass synth and the live looper.
 
 MIT. See [LICENSE](LICENSE).
 
-## Unreleased safety migration
+## v0.2.0 safety migration
 
-The working tree contains API-breaking safety corrections. Existing `v0.1.10`
-consumers remain pinned to that release. Before adopting this revision, follow
+`v0.2.0` contains API-breaking safety corrections. Existing `v0.1.10` consumers
+remain pinned to that release. Before adopting this revision, follow
 [the migration guide](docs/24-safety-migration.md); do not add blanket unsafe
 blocks around feature code.

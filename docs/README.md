@@ -42,7 +42,7 @@ Every page has a runnable-shaped example. The examples assume:
 crate-type = ["cdylib"]
 
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.1.10" }
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.0" }
 # The unreleased safety revision is API-breaking; see 24-safety-migration.md.
 ```
 
