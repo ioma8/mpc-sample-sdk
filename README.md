@@ -58,7 +58,7 @@ The crate is published from this repository:
 
 ```toml
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.0" }
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.1" }
 ```
 
 A mod builds as a `cdylib`:
