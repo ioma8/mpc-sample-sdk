@@ -1,9 +1,11 @@
 # Lifecycle: a minimal mod
 
 A mod is one type that implements [`Mod`]. Every callback has a default, so a
-minimal mod only overrides the one it needs. `export_mod!` gives the type a
-constructor in `.init_array`; `install` checks the firmware, patches the hooks,
-and then calls `on_start`.
+minimal mod only overrides the one it needs. `Mod` requires `Send`: the SDK
+stores the module behind one process-wide slot and calls it from the UI or audio
+thread, never both at once. `export_mod!` gives the type a constructor in
+`.init_array`; `install` checks the firmware, patches the hooks, and then calls
+`on_start`.
 
 ## The smallest useful mod
 
