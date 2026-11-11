@@ -87,3 +87,21 @@ if let Some(sample) = pads::sample_for_pad(surface, pad) {
 
 `sample_for_pad` takes the **surface object**, not the screen component.
 `control::surface()` is the surface the SDK learned from the app's control hook.
+
+## Activate a populated layer
+
+`set_layer_active` updates the pad's native `InstrumentLayer::active` byte. It
+returns `false` when the pad does not have a populated layer or the update
+cannot be confirmed:
+
+```rust
+use mpc_sample_sdk::platform::{control, pads};
+
+let surface = control::surface();
+let pad = 0; // A01, zero-based
+let activated = pads::set_layer_active(surface, pad, true);
+```
+
+On firmware 1.3.0.12, Ghidra identifies this byte at `InstrumentLayer + 0xb18`;
+setting it on a newly rendered layer makes playback audible immediately and
+persists as `active: true` when the project is saved.

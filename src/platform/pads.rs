@@ -21,6 +21,8 @@ const SURFACE_PADS_END: usize = 0x2810;
 /// `[pad state + 0x22e8]` is the layer list, `[layers + 0x4a8]` its sample.
 const STATE_LAYERS: usize = 0x22e8;
 const LAYER_SAMPLE: usize = 0x4a8;
+/// `InstrumentLayer::active`, confirmed in the firmware's native serializer.
+const LAYER_ACTIVE: usize = 0xb18;
 
 /// The app's count of free pads.
 #[must_use]
@@ -75,9 +77,8 @@ pub fn free_estimate(program: usize) -> usize {
     free
 }
 
-/// The sample a pad holds, read through the surface's own tables.
-#[must_use]
-pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
+/// The layer object at a pad, read through the surface's own tables.
+fn layer_for_pad(surface: usize, pad: i32) -> Option<usize> {
     if surface == 0 {
         return None;
     }
@@ -87,18 +88,47 @@ pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
         return None;
     }
     let index = usize::try_from(pad).ok()?;
-    if (end - array) / 8 <= index {
+    if index >= MAX_PADS || (end - array) / 8 <= index {
         return None;
     }
-    let state = image::read_pointer(array.checked_add(index * 8)?)?;
+    let state = image::read_pointer(array.checked_add(index.checked_mul(8)?)?)?;
     if state == 0 {
         return None;
     }
-    let layers = image::read_pointer(state.checked_add(STATE_LAYERS)?)?;
-    if layers == 0 {
-        return None;
+    image::read_pointer(state.checked_add(STATE_LAYERS)?)
+}
+
+/// The sample a pad holds, read through the surface's own tables.
+#[must_use]
+pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
+    let layer = layer_for_pad(surface, pad)?;
+    image::read_pointer(layer.checked_add(LAYER_SAMPLE)?).filter(|sample| *sample != 0)
+}
+
+/// Enable or disable a populated pad's sample layer.
+///
+/// Returns `false` if the pad table, layer, or memory write is unavailable. The
+/// update is visible to pad playback immediately and is saved with the project.
+#[must_use]
+pub fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
+    let Some(layer) = layer_for_pad(surface, pad) else {
+        return false;
+    };
+    let Some(sample_address) = layer.checked_add(LAYER_SAMPLE) else {
+        return false;
+    };
+    if image::read_pointer(sample_address).is_none_or(|sample| sample == 0) {
+        return false;
     }
-    image::read_pointer(layers.checked_add(LAYER_SAMPLE)?).filter(|sample| *sample != 0)
+    let Some(address) = layer.checked_add(LAYER_ACTIVE) else {
+        return false;
+    };
+    let expected = [u8::from(active)];
+    if !image::write(address, &expected) {
+        return false;
+    }
+    let mut actual = [0];
+    image::read(address, &mut actual) && actual == expected
 }
 
 #[cfg(test)]
