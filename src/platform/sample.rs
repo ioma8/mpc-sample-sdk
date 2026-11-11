@@ -193,7 +193,9 @@ pub fn geometry(sample: usize) -> Option<(u32, u16, u32)> {
 // The app's Temporary Samples service and one native seed for Extract.
 const BUILD_SAMPLE: usize = 0x01df_4ac0;
 const RELEASE_SHARED: usize = 0x0123_bca0;
-const SEED_FRAMES: u32 = 4096;
+/// One and a half seconds at 44.1 kHz: the longest synth take must fit inside
+/// the seed, because Extract's range may not exceed the source sample.
+const SEED_FRAMES: u32 = 66_150;
 static SERVICE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 // The app can retain references after Extract; keep one seed alive until process exit.
 static SEED: std::sync::OnceLock<Seed> = std::sync::OnceLock::new();
