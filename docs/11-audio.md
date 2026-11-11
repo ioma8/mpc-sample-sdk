@@ -18,6 +18,12 @@ These callbacks run on the audio thread. Do not allocate, lock a mutex, draw,
 show a toast, or block. Keep a preallocated scratch buffer in your mod, or write
 into an atomic/ring buffer that the UI reads.
 
+The SDK holds one exclusive `&mut self` at a time. The audio callback never
+waits: if a UI callback is already inside your mod, the audio callback is
+forwarded without calling it. A UI callback waits for an in-flight audio
+callback so input is not dropped, but it never waits for another UI callback.
+Keep audio callbacks short and never block inside them.
+
 ## Example: mix a quiet tone into the output
 
 ```rust

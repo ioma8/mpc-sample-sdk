@@ -108,7 +108,9 @@ pub fn read_f32(path: &Path, frames: u32, channels: u16, rate: u32) -> Option<Ve
     let cells = usize::try_from(frames)
         .ok()?
         .checked_mul(usize::from(channels))?;
-    let mut samples = vec![0.0_f32; cells];
+    let mut samples = Vec::new();
+    samples.try_reserve_exact(cells).ok()?;
+    samples.resize(cells, 0.0_f32);
     let mut buffer = [0_u8; READ_BYTES];
     let mut at = 0;
     let mut offset = data_offset;
@@ -126,9 +128,6 @@ pub fn read_f32(path: &Path, frames: u32, channels: u16, rate: u32) -> Option<Ve
         }
         at += got;
         offset += want as u64;
-        if got != room {
-            break;
-        }
     }
     if at == cells { Some(samples) } else { None }
 }
@@ -140,15 +139,25 @@ fn scan(file: &File) -> Option<(Format, u64, u32)> {
     if &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
         return None;
     }
+    let riff_end = u64::from(u32::from_le_bytes(header[4..8].try_into().ok()?)) + 8;
+    if riff_end < 12 || riff_end > file.metadata().ok()?.len() {
+        return None;
+    }
     let mut format: Option<Format> = None;
     let mut data: Option<(u64, u32)> = None;
     let mut offset = 12_u64;
     for _ in 0..MAX_CHUNKS {
+        if offset.checked_add(8)? > riff_end {
+            break;
+        }
         let mut chunk = [0_u8; 8];
         if file.read_exact_at(&mut chunk, offset).is_err() {
             break;
         }
         let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        if offset.checked_add(8)?.checked_add(u64::from(size))? > riff_end {
+            return None;
+        }
         if &chunk[0..4] == b"fmt " && (16..=MAX_FORMAT_CHUNK).contains(&size) {
             if let Some(parsed) = read_format(file, offset + 8, size) {
                 format = Some(parsed);
@@ -174,6 +183,9 @@ fn scan(file: &File) -> Option<(Format, u64, u32)> {
     if !(format.channels <= 2 && (8_000..=192_000).contains(&format.rate)) {
         return None;
     }
+    if data_bytes % frame_bytes != 0 {
+        return None;
+    }
     Some((format, data_offset, data_bytes))
 }
 
@@ -190,7 +202,15 @@ fn read_format(file: &File, offset: u64, size: u32) -> Option<Format> {
     // WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of the
     // sub-format GUID.
     if tag == EXTENSIBLE && size >= MAX_FORMAT_CHUNK {
+        if u16::from_le_bytes([payload[16], payload[17]]) < 22
+            || payload[26..40] != [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]
+        {
+            return None;
+        }
         tag = u16::from_le_bytes([payload[24], payload[25]]);
+    }
+    if u16::from_le_bytes([payload[12], payload[13]]) != channels.checked_mul(bits / 8)? {
+        return None;
     }
     let encoding = match (tag, bits) {
         (1, 16 | 24 | 32) => Encoding::Pcm,
@@ -213,7 +233,17 @@ fn read_format(file: &File, offset: u64, size: u32) -> Option<Format> {
 /// by 32768.
 #[must_use]
 pub fn scaled_sample(bytes: &[u8], width: u16, encoding: Encoding) -> i32 {
+    if bytes.len() < usize::from(width) {
+        return 0;
+    }
     match (encoding, width) {
+        (Encoding::Float, 8) => {
+            let value = f64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]));
+            if !value.is_finite() {
+                return 0;
+            }
+            (value * 32_768.0).clamp(-32_768.0, 32_767.0) as i32
+        }
         (Encoding::Float, 4) => {
             let value = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             if !value.is_finite() {
@@ -319,6 +349,27 @@ mod tests {
         file.extend_from_slice(&body);
         std::fs::write(&path, &file).expect("write wav");
         path
+    }
+
+    #[test]
+    fn float64_trim_scale_matches_float32() {
+        for value in [-2.0_f64, -0.5, 0.0, 0.5, 2.0, f64::NAN] {
+            assert_eq!(
+                super::scaled_sample(&value.to_le_bytes(), 8, Encoding::Float),
+                super::scaled_sample(&(value as f32).to_le_bytes(), 4, Encoding::Float)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_partial_frames_and_truncated_payloads() {
+        let path = write_wav("partial-frame", false, 1, 2, 44100, 16, &[0; 3]);
+        assert!(Info::read(&path).is_none());
+        let path = write_wav("short-payload", false, 1, 1, 44100, 16, &[0; 4]);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(file.metadata().unwrap().len() - 2).unwrap();
+        assert!(Info::read(&path).is_none());
+        assert_eq!(super::scaled_sample(&[0], 4, Encoding::Float), 0);
     }
 
     fn pcm16(values: &[i16]) -> Vec<u8> {

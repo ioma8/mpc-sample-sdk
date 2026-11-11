@@ -8,9 +8,9 @@ small `Graphics` handle that wraps the app's own `setColour`, `fillRect`,
 pub struct Graphics { /* private */ }
 
 impl Graphics {
-    pub fn colour(self, value: u32);
-    pub fn rect(self, x: i32, y: i32, width: i32, height: i32);
-    pub fn text(self, line: &str, x: i32, y: i32, width: i32, height: i32, size: f32);
+    pub unsafe fn colour(self, value: u32);
+    pub unsafe fn rect(self, x: i32, y: i32, width: i32, height: i32);
+    pub unsafe fn text(self, line: &str, x: i32, y: i32, width: i32, height: i32, size: f32);
 }
 ```
 
@@ -30,12 +30,16 @@ impl Mod for Draw {
         if !event.sample_page {
             return;
         }
-        graphics.colour(0xff10_1014);
-        graphics.rect(8, 8, 180, 44);
-        graphics.colour(0xffff_cc00);
-        graphics.text("MY MOD", 16, 12, 160, 16, 13.0);
-        graphics.colour(0xffff_ffff);
-        graphics.text("ready", 16, 30, 160, 14, 11.0);
+        // SAFETY: this is the live Graphics for the component the app is
+        // painting on the UI thread.
+        unsafe {
+            graphics.colour(0xff10_1014);
+            graphics.rect(8, 8, 180, 44);
+            graphics.colour(0xffff_cc00);
+            graphics.text("MY MOD", 16, 12, 160, 16, 13.0);
+            graphics.colour(0xffff_ffff);
+            graphics.text("ready", 16, 30, 160, 14, 11.0);
+        }
     }
 }
 
@@ -81,7 +85,9 @@ struct Live;
 
 impl Mod for Live {
     fn on_start(&mut self) {
-        draw::start_repaint_pump(draw::painted);
+        // SAFETY: `painted` is the component the paint hook last observed, and
+        // it returns zero instead of a stale value when nothing was painted.
+        unsafe { draw::start_repaint_pump(draw::painted) };
     }
 }
 ```

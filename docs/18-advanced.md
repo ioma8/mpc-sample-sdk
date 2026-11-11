@@ -60,21 +60,21 @@ should apply.
 
 ## Low-level sites
 
-`sites` wraps the displaced app functions. These are safe calls, but they bypass
-the normal event flow:
+`sites` wraps the displaced app functions. They are unsafe because each takes an
+app object that must still be live, and they bypass the normal event flow:
 
 ```rust
 use mpc_sample_sdk::sites;
 
-// Ask for a repaint of a component.
-sites::repaint_component(mpc_sample_sdk::platform::page::screen());
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+unsafe { sites::repaint_component(mpc_sample_sdk::platform::page::screen()) };
 
 // Are the note hooks installed?
 let ready = sites::notes_ready();
 
-// Send a note-off for a held input, from a release callback.
-sites::send_note_off(0, 0, 4);
-let _ = (ready,);
+// SAFETY: `input` must be the app's live input object; `0` is a placeholder.
+unsafe { sites::send_note_off(0, 0, 4) };
+let _ = ready;
 ```
 
 `replay_button` is in [Buttons](02-buttons.md). `repaint_function` and the

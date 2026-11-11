@@ -5,7 +5,33 @@
 //! `#[no_mangle]`.  Everything a mod needs is in [`OutputInfo`] and the input
 //! callbacks; the device's own handles never reach the mod.
 
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+
+/// The input and output taps carry independent geometry and scratch storage, so
+/// they are serialised independently: a blocking output write must not make the
+/// input tap skip a block (or the other way around).
+static OUT_TAP_ACTIVE: AtomicBool = AtomicBool::new(false);
+static IN_TAP_ACTIVE: AtomicBool = AtomicBool::new(false);
+static IN_PCM: AtomicUsize = AtomicUsize::new(0);
+static OUT_PCM: AtomicUsize = AtomicUsize::new(0);
+static IN_RATE: AtomicU32 = AtomicU32::new(44_100);
+static OUT_RATE: AtomicU32 = AtomicU32::new(44_100);
+
+/// One direction's tap guard.  Reentry forwards the app's call untouched instead
+/// of aliasing the tap's scratch or geometry.
+struct TapGuard(&'static AtomicBool);
+impl TapGuard {
+    fn enter(flag: &'static AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self(flag))
+    }
+}
+impl Drop for TapGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 /// The PCM format code for signed 32-bit little-endian samples.
 const FORMAT_S32_LE: i32 = 10;
@@ -189,13 +215,21 @@ static IN_DELAY: AtomicU32 = AtomicU32::new(0);
 
 /// Ask the audio taps to re-read the device rings.
 pub fn mark_buffers_stale() {
-    BUF_DIRTY.store(1, Ordering::Release);
+    BUF_DIRTY.store(3, Ordering::Release);
 }
 
 /// Whether the audio taps still have to re-read the device rings.
 #[must_use]
 pub fn buffers_stale() -> bool {
     BUF_DIRTY.load(Ordering::Acquire) != 0
+}
+
+/// Whether a tap must re-read its stream geometry.
+///
+/// The cached handle matters: a second stream (or a planar capture after an
+/// interleaved one) must not inherit the first stream's format or channels.
+fn needs_refresh(buffer: u32, dirty: i32, cached_pcm: usize, pcm: usize, bit: i32) -> bool {
+    buffer == 0 || dirty & bit != 0 || cached_pcm != pcm
 }
 
 /// The output ring's size in frames, zero until read.
@@ -218,19 +252,19 @@ pub fn input_delay() -> u32 {
 
 /// The calibration trim, in frames; the device harness reads it by name.
 #[unsafe(export_name = "g_lat_extra")]
-pub static mut G_LAT_EXTRA: i32 = 0;
+pub static G_LAT_EXTRA: AtomicI32 = AtomicI32::new(0);
 
 /// The calibration trim, as an unsigned frame count.
 #[must_use]
 pub fn extra_latency() -> u32 {
     // SAFETY: written by the UI thread and the config load.
-    u32::try_from(unsafe { core::ptr::addr_of!(G_LAT_EXTRA).read() }.max(0)).unwrap_or(0)
+    u32::try_from(G_LAT_EXTRA.load(Ordering::Acquire).max(0)).unwrap_or(0)
 }
 
 /// Set the calibration trim in frames.
 pub fn set_extra_latency(frames: i32) {
     // SAFETY: written by the UI thread and the config load.
-    unsafe { core::ptr::addr_of_mut!(G_LAT_EXTRA).write(frames.max(0)) };
+    G_LAT_EXTRA.store(frames.max(0), Ordering::Release);
 }
 
 /// The output stream's channel count, zero until read.
@@ -249,45 +283,64 @@ pub static mut g_buf_in: u32 = 0;
 pub static mut g_buf_out: u32 = 0;
 
 /// The app's own `snd_pcm_writei`.
-static mut REAL_WRITEI: Option<unsafe extern "C" fn(usize, *const u8, u64) -> i64> = None;
+static REAL_WRITEI: std::sync::OnceLock<
+    Option<unsafe extern "C" fn(usize, *const u8, u64) -> i64>,
+> = std::sync::OnceLock::new();
 /// The app's own `snd_pcm_delay`.
-static mut REAL_DELAY: Option<unsafe extern "C" fn(usize, *mut i64) -> i64> = None;
+static REAL_DELAY: std::sync::OnceLock<Option<unsafe extern "C" fn(usize, *mut i64) -> i64>> =
+    std::sync::OnceLock::new();
+
+// Scratch is protected by OUT_TAP_ACTIVE and never exposed outside one write.
+// ALSA accepts a const input buffer; mixing must not mutate caller-owned data.
+static mut OUTPUT_SCRATCH: [i32; DEVICE_MAX_FRAMES as usize * DEVICE_MAX_CHANNELS] =
+    [0; DEVICE_MAX_FRAMES as usize * DEVICE_MAX_CHANNELS];
 
 /// The output tap: let the mod mix, measure the device's latency, then write.
 ///
 /// # Safety
 ///
-/// `buffer` must hold `size` bytes, as the app's own writer requires.
+/// `pcm` must be live, and `buffer` must hold `size` complete frames in the
+/// stream format, as required by ALSA.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u64) -> i64 {
     // SAFETY: the static is this module's.
-    let mut real = unsafe { *core::ptr::addr_of!(REAL_WRITEI) };
-    if real.is_none() {
-        real = look_up(c"snd_pcm_writei");
-        // SAFETY: written once.
-        unsafe { REAL_WRITEI = real };
-    }
+    let real = *REAL_WRITEI.get_or_init(|| look_up(c"snd_pcm_writei"));
     let Some(write) = real else {
         return -1;
     };
-    let stale = buffers_stale();
-    if output_buffer() == 0 || stale {
+    let Some(_guard) = TapGuard::enter(&OUT_TAP_ACTIVE) else {
+        // SAFETY: forward the caller's original ALSA arguments unchanged.
+        return unsafe { write(pcm, buffer.cast(), size) };
+    };
+    if needs_refresh(
+        output_buffer(),
+        BUF_DIRTY.load(Ordering::Acquire),
+        OUT_PCM.load(Ordering::Acquire),
+        pcm,
+        1,
+    ) {
         // SAFETY: `pcm` is the live handle.
         unsafe { refresh_output(pcm) };
     }
-    // SAFETY: the audio thread writes these words before it plays a block.
+    let mut buffer = buffer;
+    // SAFETY: the output guard protects the stream geometry and scratch buffer.
     let (channels, s32) = unsafe { (G_OUT_CH, G_OUT_S32) };
     if !buffer.is_null() && size != 0 && channels != 0 && s32 != 0 && size < DEVICE_MAX_FRAMES {
         let delay = measure_delay(pcm);
         let block = usize::try_from(size).unwrap_or(0);
         let frames = block * channels as usize;
-        // SAFETY: the buffer holds `size * channels` samples, as the app's
-        // writer requires.
-        let samples = unsafe { core::slice::from_raw_parts_mut(buffer.cast_mut(), frames) };
+        // SAFETY: validated geometry bounds frames to the scratch capacity.
+        // The ALSA caller supplies readable input; the tap guard excludes reentry.
+        let samples = unsafe {
+            let scratch = core::ptr::addr_of_mut!(OUTPUT_SCRATCH).cast::<i32>();
+            core::ptr::copy_nonoverlapping(buffer, scratch, frames);
+            buffer = scratch;
+            core::slice::from_raw_parts_mut(scratch, frames)
+        };
         let info = OutputInfo {
             pcm,
             channels: channels as usize,
-            rate: stream_rate(pcm),
+            rate: OUT_RATE.load(Ordering::Acquire),
             block_frames: block,
             device_delay: delay,
             buffer_out: output_buffer(),
@@ -296,15 +349,31 @@ pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u6
             // SAFETY: the audio thread updates the peak after each write.
             output_peak_bits: unsafe { G_OUT_PEAK_BITS },
         };
-        crate::loader::with_mod(|module| module.on_output(samples, &info));
+        crate::loader::with_mod_audio(|module| module.on_output(samples, &info));
     }
     // SAFETY: the app's own writer takes these.
     let written = unsafe { write(pcm, buffer.cast::<u8>(), size) };
-    if written > 0 && !buffer.is_null() && channels != 0 {
-        // SAFETY: the buffer holds the frames just written.
+    if recordable(size, written, channels, s32) && !buffer.is_null() {
+        // SAFETY: the format and geometry were just validated and the buffer
+        // holds the S32 frames the app's writer reported.
         unsafe { record_output(buffer, written, channels) };
     }
     written
+}
+
+/// Whether a completed write may be recorded as S32.
+///
+/// An S16 (or otherwise formatted) stream must be forwarded and ignored: reading
+/// its block as `i32` would run past the delivered frame's end.
+fn recordable(size: u64, written: i64, channels: u32, s32: i32) -> bool {
+    let Ok(frames) = u64::try_from(written) else {
+        return false;
+    };
+    s32 != 0
+        && frames > 0
+        && frames <= size
+        && channels > 0
+        && channels as usize <= DEVICE_MAX_CHANNELS
 }
 
 /// Read the output ring's geometry.
@@ -327,13 +396,13 @@ unsafe fn refresh_output(pcm: usize) {
     // SAFETY: this module's statics.
     unsafe {
         g_buf_out = frames;
-        if channels != 0 {
-            G_OUT_CH = channels;
-            G_OUT_S32 = s32;
-        }
+        G_OUT_CH = channels;
+        G_OUT_S32 = s32;
     }
-    if frames != 0 && input_buffer() != 0 {
-        BUF_DIRTY.store(0, Ordering::Release);
+    OUT_RATE.store(stream_rate(pcm), Ordering::Release);
+    OUT_PCM.store(pcm, Ordering::Release);
+    if frames != 0 {
+        BUF_DIRTY.fetch_and(!1, Ordering::AcqRel);
     }
 }
 
@@ -341,11 +410,7 @@ unsafe fn refresh_output(pcm: usize) {
 fn measure_delay(pcm: usize) -> u32 {
     // SAFETY: this module's statics.
     unsafe {
-        let mut real = *core::ptr::addr_of!(REAL_DELAY);
-        if real.is_none() {
-            real = look_up(c"snd_pcm_delay");
-            REAL_DELAY = real;
-        }
+        let real = *REAL_DELAY.get_or_init(|| look_up(c"snd_pcm_delay"));
         let Some(delay_of) = real else {
             return G_OUT_DELAY_AVG;
         };
@@ -367,8 +432,7 @@ fn measure_delay(pcm: usize) -> u32 {
 
 /// The stream's rate, cached once.
 fn stream_rate(pcm: usize) -> u32 {
-    static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *RATE.get_or_init(|| {
+    {
         type Malloc = unsafe extern "C" fn(*mut *mut libc::c_void) -> i32;
         type Current = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_void) -> i32;
         type Rate = unsafe extern "C" fn(*mut libc::c_void, *mut u32, *mut i32) -> i32;
@@ -404,7 +468,7 @@ fn stream_rate(pcm: usize) -> u32 {
         } else {
             44_100
         }
-    })
+    }
 }
 
 /// Record what was written: the peak and the tap.
@@ -438,34 +502,55 @@ unsafe fn record_output(buffer: *const i32, written: i64, channels: u32) {
     }
 }
 
+/// Whether a completed read may be decoded as S32 input.
+///
+/// The format, channel count and delivered frame count all have to describe the
+/// buffer the app's reader just filled.  An S16 stream is ignored rather than
+/// interpreted as `i32`.
+fn input_usable(frames: usize, size: u64, channels: u32, s32: i32) -> bool {
+    s32 != 0
+        && frames > 0
+        && channels > 0
+        && channels as usize <= DEVICE_MAX_CHANNELS
+        && u64::try_from(frames).is_ok_and(|read| read <= size)
+}
+
 /// How many times the app asked for input audio.
 pub static mut G_AUDIO_IN_CALLS: u32 = 0;
 
 /// The app's own `snd_pcm_readi`.
-static mut REAL_READI: Option<unsafe extern "C" fn(usize, *mut u8, u64) -> i64> = None;
+static REAL_READI: std::sync::OnceLock<Option<unsafe extern "C" fn(usize, *mut u8, u64) -> i64>> =
+    std::sync::OnceLock::new();
 /// The app's own `snd_pcm_avail`.
-static mut REAL_AVAIL: Option<unsafe extern "C" fn(usize) -> i64> = None;
+static REAL_AVAIL: std::sync::OnceLock<Option<unsafe extern "C" fn(usize) -> i64>> =
+    std::sync::OnceLock::new();
 
 /// The input tap: let the mod hear the interleaved block the app just read.
 ///
 /// # Safety
 ///
-/// `buffer` must hold `size` bytes, as the app's own reader requires.
+/// `pcm` must be live, and `buffer` must be writable for `size` complete frames
+/// in the stream format, as required by ALSA.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) -> i64 {
     // SAFETY: the static is this module's.
-    let mut real = unsafe { *core::ptr::addr_of!(REAL_READI) };
-    if real.is_none() {
-        real = look_up(c"snd_pcm_readi");
-        // SAFETY: written once.
-        unsafe { REAL_READI = real };
-    }
+    let real = *REAL_READI.get_or_init(|| look_up(c"snd_pcm_readi"));
     let Some(capture) = real else {
         return -1;
     };
-    // SAFETY: this module's statics.
+    let Some(_guard) = TapGuard::enter(&IN_TAP_ACTIVE) else {
+        // SAFETY: forward the caller's original ALSA arguments unchanged.
+        return unsafe { capture(pcm, buffer.cast(), size) };
+    };
+    // SAFETY: this module's statics are protected by the guard.
     unsafe { measure_input_delay(pcm) };
-    if input_buffer() == 0 || buffers_stale() {
+    if needs_refresh(
+        input_buffer(),
+        BUF_DIRTY.load(Ordering::Acquire),
+        IN_PCM.load(Ordering::Acquire),
+        pcm,
+        2,
+    ) {
         // SAFETY: `pcm` is the live handle.
         unsafe { refresh_input(pcm) };
     }
@@ -475,12 +560,12 @@ pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) 
         // SAFETY: this module's statics.
         unsafe {
             G_AUDIO_IN_CALLS = G_AUDIO_IN_CALLS.wrapping_add(1);
-            if !buffer.is_null() && G_IN_CH != 0 && G_IN_S32 != 0 {
+            let frames = usize::try_from(got).unwrap_or(0);
+            if !buffer.is_null() && input_usable(frames, size, G_IN_CH, G_IN_S32) {
                 let channels = G_IN_CH as usize;
-                let frames = usize::try_from(got).unwrap_or(0);
                 let samples = core::slice::from_raw_parts(buffer.cast_const(), frames * channels);
-                crate::loader::with_mod(|module| {
-                    module.on_input_interleaved(samples, channels, stream_rate(pcm));
+                crate::loader::with_mod_audio(|module| {
+                    module.on_input_interleaved(samples, channels, IN_RATE.load(Ordering::Acquire));
                 });
             }
         }
@@ -496,14 +581,10 @@ pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) 
 unsafe fn measure_input_delay(pcm: usize) {
     // SAFETY: this module's statics.
     unsafe {
-        let mut real = *core::ptr::addr_of!(REAL_AVAIL);
-        if real.is_none() {
-            real = look_up(c"snd_pcm_avail");
-            REAL_AVAIL = real;
-        }
+        let real = *REAL_AVAIL.get_or_init(|| look_up(c"snd_pcm_avail"));
         if let Some(avail_of) = real {
             let avail = avail_of(pcm);
-            if avail > 0 {
+            if avail >= 0 {
                 let delay = u32::try_from(avail).unwrap_or(0);
                 IN_DELAY.store(delay, Ordering::Release);
             }
@@ -531,38 +612,94 @@ unsafe fn refresh_input(pcm: usize) {
     // SAFETY: this module's statics.
     unsafe {
         g_buf_in = frames;
-        if channels != 0 {
-            G_IN_CH = channels;
-            G_IN_S32 = s32;
-        }
+        G_IN_CH = channels;
+        G_IN_S32 = s32;
     }
-    if frames != 0 && output_buffer() != 0 {
-        BUF_DIRTY.store(0, Ordering::Release);
+    IN_RATE.store(stream_rate(pcm), Ordering::Release);
+    IN_PCM.store(pcm, Ordering::Release);
+    if frames != 0 {
+        BUF_DIRTY.fetch_and(!2, Ordering::AcqRel);
     }
 }
 
 /// The app's own `snd_pcm_readn`.
-static mut REAL_READN: Option<unsafe extern "C" fn(usize, *mut *mut i32, u64) -> i64> = None;
+static REAL_READN: std::sync::OnceLock<
+    Option<unsafe extern "C" fn(usize, *mut *mut i32, u64) -> i64>,
+> = std::sync::OnceLock::new();
+/// `snd_pcm_hw_params_set_channels(pcm, params, channels)`, as ALSA declares it.
+type SetChannels = unsafe extern "C" fn(usize, usize, u32) -> i32;
+
 /// The app's own `snd_pcm_hw_params_set_channels`.
-static mut REAL_SET_CHANNELS: Option<unsafe extern "C" fn(usize, u32) -> i32> = None;
+static REAL_SET_CHANNELS: std::sync::OnceLock<Option<SetChannels>> = std::sync::OnceLock::new();
+
+// The exported symbol must keep ALSA's declaration: `(pcm, params, channels)`.
+const _: SetChannels = snd_pcm_hw_params_set_channels;
+
+/// Forward one channel request to the real ALSA setter, preserving every
+/// argument's position.
+///
+/// # Safety
+///
+/// `pcm` and `params` must be the live objects the caller received, and `set`
+/// must be the real `snd_pcm_hw_params_set_channels` entry point.
+unsafe fn forward_set_channels(set: SetChannels, pcm: usize, params: usize, channels: u32) -> i32 {
+    // SAFETY: the caller guarantees both the entry point and its objects.
+    unsafe { set(pcm, params, channels) }
+}
+
+/// Apply a channel request through the resolved setter, if any.
+///
+/// # Safety
+///
+/// `pcm` and `params` must be live ALSA objects.
+unsafe fn set_channels_with(
+    real: Option<SetChannels>,
+    pcm: usize,
+    params: usize,
+    channels: u32,
+) -> i32 {
+    match real {
+        Some(set) => {
+            // SAFETY: the entry point and objects come from the caller's ALSA call.
+            let result = unsafe { forward_set_channels(set, pcm, params, channels) };
+            if result >= 0 {
+                mark_buffers_stale();
+            }
+            result
+        }
+        None => -1,
+    }
+}
 
 /// The planar input tap.
 ///
 /// # Safety
 ///
-/// `buffers` must hold `size` bytes per buffer, as the app's own reader requires.
+/// `pcm` must be live, and `buffers` must contain one writable buffer per
+/// channel, each holding `size` samples in the stream format.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size: u64) -> i64 {
     // SAFETY: the static is this module's.
-    let mut real = unsafe { *core::ptr::addr_of!(REAL_READN) };
-    if real.is_none() {
-        real = look_up(c"snd_pcm_readn");
-        // SAFETY: written once.
-        unsafe { REAL_READN = real };
-    }
+    let real = *REAL_READN.get_or_init(|| look_up(c"snd_pcm_readn"));
     let Some(capture) = real else {
         return -1;
     };
+    let Some(_guard) = TapGuard::enter(&IN_TAP_ACTIVE) else {
+        // SAFETY: forward the caller's original ALSA arguments unchanged.
+        return unsafe { capture(pcm, buffers, size) };
+    };
+    // SAFETY: pcm is the caller's live stream.
+    unsafe { measure_input_delay(pcm) };
+    if needs_refresh(
+        input_buffer(),
+        BUF_DIRTY.load(Ordering::Acquire),
+        IN_PCM.load(Ordering::Acquire),
+        pcm,
+        2,
+    ) {
+        // SAFETY: pcm is the caller's live stream.
+        unsafe { refresh_input(pcm) };
+    }
     // SAFETY: the app's own reader takes these.
     let got = unsafe { capture(pcm, buffers, size) };
     if got <= 0 || buffers.is_null() {
@@ -574,6 +711,9 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
         return got;
     }
     let frames = usize::try_from(got).unwrap_or(0);
+    if !input_usable(frames, size, channels, s32) {
+        return got;
+    }
     let count = (channels as usize).min(DEVICE_MAX_CHANNELS);
     let mut planes: [&[i32]; DEVICE_MAX_CHANNELS] = [&[]; DEVICE_MAX_CHANNELS];
     let mut live = 0;
@@ -588,8 +728,8 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
         live += 1;
     }
     if live != 0 {
-        crate::loader::with_mod(|module| {
-            module.on_input_planar(&planes[..live], stream_rate(pcm));
+        crate::loader::with_mod_audio(|module| {
+            module.on_input_planar(&planes[..live], IN_RATE.load(Ordering::Acquire));
         });
     }
     got
@@ -599,21 +739,18 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
 ///
 /// # Safety
 ///
-/// `params` is the app's own parameters object.
+/// `pcm` and `params` must be live ALSA objects.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn snd_pcm_hw_params_set_channels(params: usize, channels: u32) -> i32 {
+pub unsafe extern "C" fn snd_pcm_hw_params_set_channels(
+    pcm: usize,
+    params: usize,
+    channels: u32,
+) -> i32 {
     // SAFETY: the static is this module's.
-    let mut real = unsafe { *core::ptr::addr_of!(REAL_SET_CHANNELS) };
-    if real.is_none() {
-        real = look_up(c"snd_pcm_hw_params_set_channels");
-        // SAFETY: written once.
-        unsafe { REAL_SET_CHANNELS = real };
-    }
-    match real {
-        // SAFETY: the app's own setter takes these.
-        Some(set) => unsafe { set(params, channels) },
-        None => -1,
-    }
+    let real: Option<SetChannels> =
+        *REAL_SET_CHANNELS.get_or_init(|| look_up(c"snd_pcm_hw_params_set_channels"));
+    // SAFETY: the caller passes the live objects ALSA handed it.
+    unsafe { set_channels_with(real, pcm, params, channels) }
 }
 
 /// Force the four ALSA symbols into the final shared object.
@@ -660,7 +797,100 @@ pub fn add_planes_i32(dst: &mut [i32], channels: usize, planes: &[&[f32]]) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputInfo, buffers_stale, mark_buffers_stale, output_buffer};
+    use std::sync::Mutex;
+
+    use super::{
+        OutputInfo, TapGuard, buffers_stale, extra_latency, input_usable, mark_buffers_stale,
+        needs_refresh, output_buffer, recordable, set_channels_with, set_extra_latency,
+    };
+
+    /// Records the arguments a mock ALSA setter received.
+    static SEEN: Mutex<Option<(usize, usize, u32)>> = Mutex::new(None);
+
+    unsafe extern "C" fn mock_set_channels(pcm: usize, params: usize, channels: u32) -> i32 {
+        *SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pcm, params, channels));
+        0
+    }
+
+    #[test]
+    fn set_channels_forwards_every_alsa_argument_in_declaration_order() {
+        *SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        // SAFETY: the mock has ALSA's declared `(pcm, params, channels)` ABI.
+        let result = unsafe { set_channels_with(Some(mock_set_channels), 0x11, 0x22, 6) };
+        assert_eq!(result, 0);
+        assert_eq!(
+            *SEEN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((0x11, 0x22, 6)),
+            "pcm and params must not be shifted into the channel slot"
+        );
+        // SAFETY: the mock has ALSA's declared ABI.
+        assert_eq!(unsafe { set_channels_with(None, 1, 2, 3) }, -1);
+    }
+
+    #[test]
+    fn recording_is_gated_on_s32_format_and_geometry() {
+        assert!(recordable(512, 512, 2, 1));
+        assert!(!recordable(512, 512, 2, 0), "S16 must not be read as S32");
+        assert!(!recordable(512, 513, 2, 1), "wrote past the block");
+        assert!(!recordable(512, -1, 2, 1), "error return");
+        assert!(!recordable(512, 0, 2, 1), "no frames");
+        assert!(!recordable(512, 512, 0, 1), "unknown channels");
+        assert!(!recordable(512, 512, 33, 1), "implausible channels");
+    }
+
+    #[test]
+    fn geometry_is_refreshed_for_a_new_stream_or_a_stale_tap() {
+        // A first callback, a marked-stale ring, and a second PCM handle all
+        // force a refresh; the same live handle with a clean bit does not.
+        assert!(needs_refresh(0, 0, 0, 5, 2), "no geometry yet");
+        assert!(needs_refresh(1024, 2, 5, 5, 2), "marked stale");
+        assert!(needs_refresh(1024, 0, 4, 5, 2), "different stream");
+        assert!(!needs_refresh(1024, 0, 5, 5, 2), "same live stream");
+    }
+
+    #[test]
+    fn input_decoding_is_gated_on_format_and_delivered_frames() {
+        assert!(input_usable(512, 512, 2, 1));
+        assert!(!input_usable(512, 512, 2, 0), "S16 must not be read as S32");
+        assert!(!input_usable(513, 512, 2, 1), "more frames than requested");
+        assert!(!input_usable(0, 512, 2, 1), "no frames");
+        assert!(!input_usable(512, 512, 0, 1), "unknown channels");
+        assert!(!input_usable(512, 512, 33, 1), "implausible channels");
+    }
+
+    #[test]
+    fn the_input_and_output_taps_do_not_block_each_other() {
+        static OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let out = TapGuard::enter(&OUT).expect("output tap");
+        let input = TapGuard::enter(&IN).expect("input tap while output is active");
+        drop((out, input));
+        assert!(TapGuard::enter(&OUT).is_some());
+    }
+
+    #[test]
+    fn the_calibration_trim_round_trips_and_clamps() {
+        set_extra_latency(-7);
+        assert_eq!(extra_latency(), 0);
+        set_extra_latency(123);
+        assert_eq!(extra_latency(), 123);
+        set_extra_latency(0);
+    }
+
+    #[test]
+    fn a_tap_guard_refuses_reentry_until_dropped() {
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let first = TapGuard::enter(&FLAG).expect("first entry");
+        assert!(TapGuard::enter(&FLAG).is_none(), "reentry must be refused");
+        drop(first);
+        assert!(TapGuard::enter(&FLAG).is_some(), "the guard must release");
+    }
 
     #[test]
     fn the_buffer_flag_is_readable_and_settable() {

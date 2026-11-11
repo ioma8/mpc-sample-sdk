@@ -73,8 +73,9 @@ struct Replay;
 impl Mod for Replay {
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
         if event.code == 0x6f && event.pressed {
-            // Replay CHOP after the original event; the SDK supplies the hook.
-            let _ = mpc_sample_sdk::sites::replay_button(&event.bytes, 0x4b);
+            // SAFETY: `event` was captured in this callback, so its context and
+            // surface are still live while we replay it.
+            let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event.bytes, 0x4b) };
         }
         ButtonFlow::Forward
     }

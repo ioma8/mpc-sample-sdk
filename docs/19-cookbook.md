@@ -45,10 +45,11 @@ impl Mod for MyMod {
             return PadFlow::Forward;
         }
         let screen = page::screen();
-        if let Some(selected) = selection::current(screen) {
+        // SAFETY: `screen` is the live Sample page recorded by the paint hook.
+        if let Some(selected) = unsafe { selection::current(screen) } {
             let message = format!(
                 "{} frames, {} ch, {} Hz",
-                selected.frames, selected.channels, selected.rate
+                selected.frames(), selected.channels(), selected.rate()
             );
             draw::show_toast(&message);
             draw::repaint_painted();
@@ -63,12 +64,15 @@ impl Mod for MyMod {
         if !event.sample_page || !self.open {
             return;
         }
-        graphics.colour(0xff10_1014);
-        graphics.rect(8, 8, 180, 54);
-        graphics.colour(0xffff_cc00);
-        graphics.text("MyMod", 16, 12, 160, 16, 13.0);
-        graphics.colour(0xffff_ffff);
-        graphics.text("pad 1: inspect", 16, 30, 160, 14, 11.0);
+        // SAFETY: the app is painting this live Graphics on the UI thread.
+        unsafe {
+            graphics.colour(0xff10_1014);
+            graphics.rect(8, 8, 180, 54);
+            graphics.colour(0xffff_cc00);
+            graphics.text("MyMod", 16, 12, 160, 16, 13.0);
+            graphics.colour(0xffff_ffff);
+            graphics.text("pad 1: inspect", 16, 30, 160, 14, 11.0);
+        }
     }
 }
 
@@ -79,7 +83,8 @@ mpc_sample_sdk::export_mod!(MyMod);
 
 - `on_button` owns a chord and returns `Consume`.
 - `on_pad` scopes itself to the mod's own panel and consumes pad 1.
-- `selection::current` gets the typed source; no raw pointers.
+- `unsafe { selection::current(screen) }` gets the typed source; the screen
+  comes from the paint hook, so no raw pointer is guessed.
 - `draw::show_toast` reports a result; `repaint_painted()` makes it visible.
 - `on_paint` draws after the app, so it composes with the stock screen.
 
@@ -89,5 +94,5 @@ mpc_sample_sdk::export_mod!(MyMod);
 - Write the result through [Extract](13-extract.md).
 - Add real values on the panel from [Knobs](05-knobs.md) or
   [Audio](11-audio.md).
-- Use [State](15-state.md) if another module or the audio thread must read a
-  flag.
+- Use [State](15-state.md) for UI-thread state; use atomics or a synchronized
+  queue for flags shared with the audio thread.

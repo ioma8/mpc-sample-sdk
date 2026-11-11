@@ -47,23 +47,41 @@ fn sample_path(sample_object: usize) -> Option<std::path::PathBuf> {
 }
 ```
 
-`paths::for_sample` first uses the sample's own object graph and then the
-project's path index. `paths::from_object` is the object-only variant.
+`paths::for_sample` uses only the sample's own object graph. It never scans
+temporary projects: a matching frame count does not prove that a temporary file
+is this recording. `paths::from_object` is the object-only variant.
 
-For a newly written file:
+A freshly recorded sample has no stored path yet. Pass its project directory
+explicitly:
 
 ```rust
 use mpc_sample_sdk::platform::paths;
 
-let root = std::path::Path::new(paths::TEMP_PROJECTS);
-if let Some(path) = paths::unique(root, 44_100, 2, 44_100) {
+let project = std::path::Path::new(
+    "/data/TempProjects/Temp-Project_[ProjectData]",
+);
+let path = paths::for_recording(sample_object, frames, 2, 44_100, project);
+```
+
+`for_recording` searches only `project` and accepts the result only when exactly
+one WAV has the requested frames, channels and rate.
+
+To inspect the single match yourself:
+
+```rust
+use mpc_sample_sdk::platform::paths;
+
+let project = std::path::Path::new(
+    "/data/TempProjects/Temp-Project_[ProjectData]",
+);
+if let Some(path) = paths::unique(project, 44_100, 2, 44_100) {
     mpc_sample_sdk::platform::status::set_status(&format!("{}", path.display()));
 }
 ```
 
-`unique` creates a path that does not collide with an existing sample. The SDK
-does not write the WAV for you; use `extract` for pads or write your own file
-under the same root.
+`unique` finds the one existing file with exactly that geometry. It does not
+create a path or a file; the SDK does not write the WAV for you. Use `extract`
+for pads or write your own file under the same project.
 
 ## Reading text paths
 

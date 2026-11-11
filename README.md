@@ -1,6 +1,6 @@
 # mpc-sample-sdk
 
-**A memory-safe Rust SDK for building Akai MPC Sample mods.**
+**A Rust SDK for building Akai MPC Sample mods.**
 
 The universal mod SDK for the Akai MPC Sample 1.3.0.12, written in Rust
 (edition 2024, MSRV 1.97). The SDK is an ordinary Cargo crate: a mod is a Rust
@@ -15,9 +15,9 @@ public API.
   calls are Rust structs and enums, not raw event pointers.
 - **Typed app objects.** Selections, samples, pads, slices, WAV files, effects
   and Extract requests have checked accessors and `Option`/`Result` errors.
-- **Safe mod code.** The firmware boundary is isolated in this SDK. Its unsafe
-  entry points are documented and kept out of the normal API; a mod written
-  against the event and platform API contains no `unsafe` and no C ABI.
+- **Explicit firmware contracts.** Events and owned audio have safe APIs. Raw
+  firmware calls and UI state access are unsafe where callers must establish
+  object lifetime, thread ownership, or exclusive access.
 - **One build tool.** [`build-mod.sh`](build-mod.sh) uses Cargo for the
   cross-build, then checks symbols, glibc and the packaged `autorun` zip.
 - **Checked in CI-friendly ways.** The crate is fmt-, clippy- (`all`,
@@ -25,8 +25,7 @@ public API.
   the host.
 
 See [the hands-on guide](docs/README.md) and the
-[minimod](https://github.com/ioma8/mpc-minimod) repository for a complete mod
-built in safe Rust.
+[minimod](https://github.com/ioma8/mpc-minimod) repository for a complete mod.
 
 ## What the SDK owns
 
@@ -49,9 +48,9 @@ It owns everything that is not a feature:
 * **Platform objects** — typed, bounds-checked access to the page, the selected
   sample, pads, slices, trim, WAV files, paths, the status line, the clock, the
   writer, the control surface, the effect renderer and the Extract command.
-* **Safe state** — `state::Global` and `export_static!` keep process-wide UI
-  state and the exported statics out of the feature crate, so a mod can be
-  written without `unsafe`.
+* **UI state** — `state::Global` preserves exported state layout. Its unsafe
+  accessors require UI-thread ownership and non-overlapping borrows; see
+  [state safety and migration](docs/15-state.md).
 
 ## Install
 
@@ -147,3 +146,10 @@ firmware effects, the bass synth and the live looper.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Unreleased safety migration
+
+The working tree contains API-breaking safety corrections. Existing `v0.1.10`
+consumers remain pinned to that release. Before adopting this revision, follow
+[the migration guide](docs/24-safety-migration.md); do not add blanket unsafe
+blocks around feature code.

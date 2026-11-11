@@ -59,7 +59,7 @@ pub fn set_status(text: &str) {
 
 /// Replace the status line with `"<prefix>: <message>"`.
 pub fn set_prefixed(prefix: &str, message: &str) {
-    let prefix = cut(prefix, MESSAGE_BYTES);
+    let prefix = cut(prefix, MESSAGE_BYTES - 2);
     let room = MESSAGE_BYTES.saturating_sub(prefix.len() + 2);
     let message = cut(message, room);
     let mut text = [0_u8; STATUS_BYTES];
@@ -126,6 +126,21 @@ mod tests {
         TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn long_prefix_preserves_separator_and_terminator() {
+        let _serial = serial();
+        for prefix in ["x".repeat(94), "x".repeat(95), "€".repeat(40)] {
+            set_prefixed(&prefix, "message");
+            let value = super::text();
+            assert!(value.len() < STATUS_BYTES);
+            assert!(value.ends_with(": "));
+        }
+        // A prefix at the old limit must leave room for both separator bytes and
+        // the NUL, not just two of the three.
+        set_prefixed(&"x".repeat(95), "message");
+        assert_eq!(super::text(), format!("{}: ", "x".repeat(93)));
     }
 
     #[test]

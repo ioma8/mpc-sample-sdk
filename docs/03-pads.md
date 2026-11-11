@@ -59,7 +59,9 @@ struct ScopedPads;
 impl Mod for ScopedPads {
     fn on_pad(&mut self, event: PadEvent) -> PadFlow {
         let screen = mpc_sample_sdk::platform::page::screen();
-        if !mpc_sample_sdk::platform::page::visible(screen) {
+        // SAFETY: `screen` is the live page recorded by the paint hook on this
+        // UI thread.
+        if !unsafe { mpc_sample_sdk::platform::page::visible(screen) } {
             return PadFlow::Forward;
         }
         if event.pad == 0 {
@@ -99,7 +101,9 @@ use mpc_sample_sdk::platform::{control, pads};
 
 let surface = control::surface();
 let pad = 0; // A01, zero-based
-let activated = pads::set_layer_active(surface, pad, true);
+// SAFETY: this is the live surface from the current UI callback, this thread
+// owns it, and no other code mutates the layer during the write.
+let activated = unsafe { pads::set_layer_active(surface, pad, true) };
 ```
 
 On firmware 1.3.0.12, Ghidra identifies this byte at `InstrumentLayer + 0xb18`;

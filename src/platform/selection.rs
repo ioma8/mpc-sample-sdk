@@ -41,17 +41,17 @@ pub enum AudioReadError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
     /// The screen the walk started from.
-    pub screen: usize,
+    pub(crate) screen: usize,
     /// The page state the instrument lives in.
-    pub state: usize,
+    pub(crate) state: usize,
     /// The selected sample object.
-    pub sample: usize,
+    pub(crate) sample: usize,
     /// Its length in frames.
-    pub frames: u32,
+    pub(crate) frames: u32,
     /// Its channel count.
-    pub channels: u16,
+    pub(crate) channels: u16,
     /// Its sample rate.
-    pub rate: u32,
+    pub(crate) rate: u32,
 }
 
 /// The state behind a Sample page, even when its selected pad is empty.
@@ -72,8 +72,14 @@ pub fn page_state(screen: usize) -> Option<usize> {
 }
 
 /// The sample the Sample page has selected, or `None`.
+///
+/// # Safety
+///
+/// `screen` must be the live Sample page recorded on its owning UI thread.  The
+/// vtable check rejects a foreign object, but cannot prove that a forged address
+/// or a page destroyed after recording is still a valid native page.
 #[must_use]
-pub fn current(screen: usize) -> Option<Selection> {
+pub unsafe fn current(screen: usize) -> Option<Selection> {
     let state = page_state(screen)?;
     // SAFETY: `image::base() + PAGE_HAS_SAMPLE` is the page's own predicate and `screen`
     // is a Sample page.
@@ -106,13 +112,82 @@ pub fn program(state: usize) -> Option<usize> {
 }
 
 impl Selection {
+    /// Build a selection for a synthetic source, such as a synth take.
+    ///
+    /// This is the explicit constructor for actions that only need the page and
+    /// state to drive Extract; no selected sample is required.
+    ///
+    /// # Safety
+    ///
+    /// `screen` and `state` must be live app objects on their owning UI thread.
+    /// The geometry must describe the audio the caller will submit; it is not
+    /// read back from a sample object.
+    #[must_use]
+    pub const unsafe fn from_parts(
+        screen: usize,
+        state: usize,
+        sample: usize,
+        frames: u32,
+        channels: u16,
+        rate: u32,
+    ) -> Self {
+        Self {
+            screen,
+            state,
+            sample,
+            frames,
+            channels,
+            rate,
+        }
+    }
+
+    /// The screen the selection was read from.
+    #[must_use]
+    pub const fn screen(&self) -> usize {
+        self.screen
+    }
+
+    /// The page state the instrument lives in.
+    #[must_use]
+    pub const fn state(&self) -> usize {
+        self.state
+    }
+
+    /// The selected sample object.
+    #[must_use]
+    pub const fn sample(&self) -> usize {
+        self.sample
+    }
+
+    /// The sample's length in frames.
+    #[must_use]
+    pub const fn frames(&self) -> u32 {
+        self.frames
+    }
+
+    /// The sample's channel count.
+    #[must_use]
+    pub const fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    /// The sample's rate in Hz.
+    #[must_use]
+    pub const fn rate(&self) -> u32 {
+        self.rate
+    }
+
     /// Whether this exact source is still the selected, visible Sample page.
     #[must_use]
     pub fn is_current(&self) -> bool {
-        if self.screen == 0 || !super::page::visible(self.screen) {
+        // SAFETY: `screen` came from a validated selection and this sample is a
+        // live app object while the mod handles the callback.
+        if self.screen == 0 || !unsafe { super::page::visible(self.screen) } {
             return false;
         }
-        current(self.screen).is_some_and(|now| now == *self)
+        // SAFETY: `self.screen` came from a validated selection and the sample
+        // is live while the mod handles the callback.
+        unsafe { current(self.screen) }.is_some_and(|now| now == *self)
     }
 
     /// Read this selection's audio, preferring the loaded buffer over its WAV.
@@ -142,6 +217,8 @@ impl Selection {
                 Err(AudioReadError::LengthMismatch)
             };
         }
+        // A sample without a stored path stays unresolved: guessing across
+        // temporary projects could read an unrelated recording of equal length.
         let path = super::paths::for_sample(self.sample, self.frames, self.channels, self.rate)
             .ok_or(AudioReadError::NoPath)?;
         let audio = super::wav::read_f32(&path, self.frames, self.channels, self.rate)
@@ -164,6 +241,7 @@ mod tests {
         assert!(RATE_RANGE.contains(&44_100));
         assert!(!RATE_RANGE.contains(&4_000));
         // A zero screen is never a selection.
-        assert!(super::current(0).is_none());
+        // SAFETY: null is rejected without native calls.
+        assert!(unsafe { super::current(0) }.is_none());
     }
 }

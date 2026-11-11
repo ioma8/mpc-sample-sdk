@@ -9,13 +9,14 @@ the Chop screen) and trim-edge detection (the data behind AutoTrim).
 use mpc_sample_sdk::platform::{page, selection, slice};
 
 let screen = page::screen();
-let Some(selected) = selection::current(screen) else {
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+let Some(selected) = unsafe { selection::current(screen) } else {
     return;
 };
-if let Some(slices) = slice::slice_count(selected.sample) {
+if let Some(slices) = slice::slice_count(selected.sample()) {
     mpc_sample_sdk::platform::status::set_status(&format!(
         "{} slices, {} frames",
-        slices.count, selected.frames
+        slices.count, selected.frames()
     ));
 }
 ```
@@ -28,15 +29,17 @@ if let Some(slices) = slice::slice_count(selected.sample) {
 use mpc_sample_sdk::platform::{page, selection, slice};
 
 let screen = page::screen();
-let Some(selected) = selection::current(screen) else {
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+let Some(selected) = unsafe { selection::current(screen) } else {
     return;
 };
 let positions = [0, 11_025, 22_050];
-if slice::verify(selected.sample, &positions, selected.frames) {
+if slice::verify(selected.sample(), &positions, selected.frames()) {
     mpc_sample_sdk::platform::status::set_status("already marked");
     return;
 }
-if slice::write_markers(selected.sample, &positions, selected.frames, screen) {
+// SAFETY: both objects came from the live Sample page in this UI callback.
+if unsafe { slice::write_markers(selected.sample(), &positions, selected.frames(), screen) } {
     mpc_sample_sdk::platform::status::set_status("marked");
 }
 ```
@@ -51,7 +54,8 @@ chop binding or the write did not take.
 use mpc_sample_sdk::platform::{page, slice};
 
 let screen = page::screen();
-if slice::set_manual(screen) {
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+if unsafe { slice::set_manual(screen) } {
     mpc_sample_sdk::platform::status::set_status("Manual chop");
 }
 ```

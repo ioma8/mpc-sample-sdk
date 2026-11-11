@@ -1,6 +1,6 @@
 [package]
 name = "mpc-sample-sdk"
-description = "Memory-safe Rust mod SDK for the Akai MPC Sample firmware"
+description = "Rust mod SDK for the Akai MPC Sample firmware"
 version = "0.1.10"
 edition = "2024"
 rust-version = "1.97"

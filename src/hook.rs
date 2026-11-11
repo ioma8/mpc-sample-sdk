@@ -127,14 +127,37 @@ fn displaced_words(prologue: &[u32; PROLOGUE_WORDS]) -> usize {
     PROLOGUE_WORDS
 }
 
-/// The two pages the hooks live in, plus the bookkeeping of what is in use.
+/// One prepared hook: the site to patch once the code pages are executable.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    site: usize,
+    branch: u32,
+    original: u32,
+}
+
+impl Pending {
+    const EMPTY: Self = Self {
+        site: 0,
+        branch: 0,
+        original: 0,
+    };
+}
+
+/// The two pages the hooks live in, plus the bookkeeping of what is pending.
+///
+/// Installation is deliberately two phase: [`Self::prepare`] writes the relay
+/// slots and trampolines into writable, non-executable pages, [`Self::seal`]
+/// makes those pages executable, and only then does [`Self::commit`] publish the
+/// branches at the hook sites.  A failure to seal therefore cannot leave a live
+/// branch pointing at non-executable memory.
 #[derive(Debug)]
 pub struct HookEngine {
     firmware: Firmware,
     relay: *mut u8,
     trampoline: *mut u8,
+    pending: [Pending; MAX_HOOKS],
     slots: usize,
-    trampolines: usize,
+    sealed: bool,
     used: bool,
 }
 
@@ -148,36 +171,30 @@ impl HookEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`HookError::NoPages`] when neither page can be placed; the
+    /// Returns [`HookError::NoPages`] when either page cannot be placed; the
     /// caller then installs nothing and the app runs unmodified.
     pub fn new(firmware: Firmware) -> Result<Self, HookError> {
         let relay = map_near(firmware, RELAY_FIRST, RELAY_LAST).ok_or(HookError::NoPages)?;
-        let trampoline = map_near(firmware, TRAMP_FIRST, TRAMP_LAST).ok_or(HookError::NoPages)?;
+        let Some(trampoline) = map_near(firmware, TRAMP_FIRST, TRAMP_LAST) else {
+            // SAFETY: relay is the unshared mapping just allocated above.
+            unsafe { libc::munmap(relay.cast(), PAGE_SIZE) };
+            return Err(HookError::NoPages);
+        };
         Ok(Self {
             firmware,
             relay,
             trampoline,
+            pending: [Pending::EMPTY; MAX_HOOKS],
             slots: 0,
-            trampolines: 0,
+            sealed: false,
             used: false,
         })
     }
 
-    /// Whether at least one hook was installed.
+    /// Whether at least one hook was published.
     #[must_use]
     pub const fn touched(&self) -> bool {
         self.used
-    }
-
-    /// Mark the pages executable once every hook is in place.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HookError::PatchFailed`] when the protection cannot be changed;
-    /// the caller keeps running, the page just stays writable.
-    pub fn seal(&self) -> Result<(), HookError> {
-        make_executable(self.relay)?;
-        make_executable(self.trampoline)
     }
 
     /// An engine with no pages, so a failed mapping is reported per hook
@@ -188,24 +205,33 @@ impl HookEngine {
             firmware,
             relay: core::ptr::null_mut(),
             trampoline: core::ptr::null_mut(),
+            pending: [Pending::EMPTY; MAX_HOOKS],
             slots: 0,
-            trampolines: 0,
+            sealed: false,
             used: false,
         }
     }
 
-    /// Install a hook at `offset` in the image.
+    /// Prepare a hook at `offset` in the image.
     ///
-    /// On success the site branches to `hook`, and the returned address is the
-    /// trampoline that runs the displaced prologue and continues into the
-    /// original body.
+    /// The site is left untouched: the relay and trampoline are written, and the
+    /// branch is remembered until [`Self::commit`].  On success the returned
+    /// address is the trampoline that runs the displaced prologue and continues
+    /// into the original body.
     ///
     /// # Errors
     ///
     /// Returns the matching [`HookError`] when the site cannot be hooked; in
-    /// that case the site is left untouched.
-    pub fn install(&mut self, offset: usize, hook: usize) -> Result<usize, HookError> {
-        if self.slots >= MAX_HOOKS || self.trampolines >= MAX_HOOKS {
+    /// that case nothing is changed.
+    ///
+    /// # Safety
+    /// The site and handler must have matching ABIs. Preparation must occur
+    /// before app threads start, and these pages must not have been sealed.
+    pub unsafe fn prepare(&mut self, offset: usize, hook: usize) -> Result<usize, HookError> {
+        if self.sealed {
+            return Err(HookError::PatchFailed);
+        }
+        if self.slots >= MAX_HOOKS {
             return Err(HookError::Full);
         }
         if self.relay.is_null() || self.trampoline.is_null() {
@@ -231,7 +257,7 @@ impl HookEngine {
         // `MAX_HOOKS` slots of `SLOT_STRIDE` bytes each.
         let slot = unsafe { self.relay.add(self.slots * SLOT_STRIDE) };
         // SAFETY: same mapping, one trampoline per slot.
-        let trampoline = unsafe { self.trampoline.add(self.trampolines * SLOT_STRIDE) };
+        let trampoline = unsafe { self.trampoline.add(self.slots * SLOT_STRIDE) };
 
         let back = encode_branch(trampoline as usize + count * 4, site + count * 4)
             .ok_or(HookError::OutOfRange)?;
@@ -252,19 +278,136 @@ impl HookEngine {
             }
             write(trampoline.add(count * 4), &back.to_le_bytes());
         }
-        flush_icache(trampoline as usize, trampoline as usize + count * 4 + 4);
-        flush_icache(slot as usize, slot as usize + 16);
+        self.pending[self.slots] = Pending {
+            site,
+            branch,
+            original: prologue[0],
+        };
+        self.slots += 1;
+        Ok(trampoline as usize)
+    }
 
-        let page = site & !(PAGE_SIZE - 1);
-        let last = (site + 3) & !(PAGE_SIZE - 1);
-        let span = (last - page) + PAGE_SIZE;
-        // SAFETY: only the pages the four-byte patch touches are remapped, and
-        // the original protection is restored right after.
-        let patched = unsafe { make_writable(page, span) }
-            && image::write(site, &branch.to_le_bytes())
-            // Read the word back: a write that did not land must not count.
-            && image::read_u32(site) == Some(branch);
-        // SAFETY: same range as above, restoring the executable mapping.
+    /// Make the prepared code executable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HookError::PatchFailed`] when the protection cannot be changed.
+    /// The pages are then released and every pending hook is dropped, so no
+    /// branch is ever published into non-executable memory.
+    pub fn seal(&mut self) -> Result<(), HookError> {
+        if self.sealed {
+            return Ok(());
+        }
+        if self.relay.is_null()
+            || self.trampoline.is_null()
+            || make_executable(self.relay).is_err()
+            || make_executable(self.trampoline).is_err()
+        {
+            self.discard_pages();
+            return Err(HookError::PatchFailed);
+        }
+        // The code was written while the pages were writable; publish it before
+        // the first branch can execute.
+        for index in 0..self.slots {
+            let slot = (self.relay as usize) + index * SLOT_STRIDE;
+            flush_icache(slot, slot + 16);
+            let trampoline = (self.trampoline as usize) + index * SLOT_STRIDE;
+            flush_icache(trampoline, trampoline + PROLOGUE_WORDS * 4 + 4);
+        }
+        self.sealed = true;
+        Ok(())
+    }
+
+    /// Publish every prepared branch, rolling all of them back on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HookError::PatchFailed`] when a site cannot be patched or read
+    /// back.  Previously patched sites are restored before the error is
+    /// returned.  The code pages are released only when every branch was
+    /// restored; otherwise they stay mapped so a live branch stays valid.
+    pub fn commit(&mut self) -> Result<(), HookError> {
+        if !self.sealed {
+            return Err(HookError::PatchFailed);
+        }
+        for index in 0..self.slots {
+            let pending = self.pending[index];
+            if !patch_site(pending.site, pending.branch) {
+                // Restore every site this commit already published, newest
+                // first.  Only when every restore succeeds may the trampoline
+                // pages be released; a live branch must never point at an
+                // unmapped page.
+                // The failed site may have been written before its read-back
+                // failed; treat "not readable as the original" as landed.
+                let landed = image::read_u32(pending.site) != Some(pending.original);
+                let mut restored = !landed || patch_site(pending.site, pending.original);
+                for done in (0..index).rev() {
+                    let pending = self.pending[done];
+                    restored &= patch_site(pending.site, pending.original);
+                }
+                if restored {
+                    self.discard_pages();
+                } else {
+                    // Some branch is still live: keep its page mapped and mark
+                    // the engine as touched so `abort` cannot unmap it.
+                    self.used = true;
+                }
+                return Err(HookError::PatchFailed);
+            }
+        }
+        self.pending = [Pending::EMPTY; MAX_HOOKS];
+        self.slots = 0;
+        self.used = true;
+        Ok(())
+    }
+
+    /// Drop every prepared hook and release the code pages.
+    ///
+    /// Does nothing once a branch was published: live branches must keep their
+    /// trampolines mapped.
+    pub fn abort(&mut self) {
+        if self.used {
+            return;
+        }
+        self.discard_pages();
+    }
+
+    /// Unmap both pages and reset the hook bookkeeping.
+    fn discard_pages(&mut self) {
+        // SAFETY: both pointers are unshared mappings owned by this engine, or
+        // null when a previous discard already released them.
+        unsafe {
+            if !self.relay.is_null() {
+                libc::munmap(self.relay.cast(), PAGE_SIZE);
+            }
+            if !self.trampoline.is_null() {
+                libc::munmap(self.trampoline.cast(), PAGE_SIZE);
+            }
+        }
+        self.relay = core::ptr::null_mut();
+        self.trampoline = core::ptr::null_mut();
+        self.pending = [Pending::EMPTY; MAX_HOOKS];
+        self.slots = 0;
+        self.sealed = false;
+    }
+}
+
+/// Write one branch word at `site` and verify it landed.
+///
+/// The page protection is restored to read-execute afterwards.
+fn patch_site(site: usize, word: u32) -> bool {
+    let page = site & !(PAGE_SIZE - 1);
+    let last = (site + 3) & !(PAGE_SIZE - 1);
+    let span = (last - page) + PAGE_SIZE;
+    // SAFETY: only the pages the four-byte patch touches are remapped.
+    let writable = unsafe { make_writable(page, span) };
+    let patched = writable
+        // SAFETY: the hook site is writable and installation precedes execution.
+        && unsafe { image::write(site, &word.to_le_bytes()) }
+        // Read the word back: a write that did not land must not count.
+        && image::read_u32(site) == Some(word);
+    if writable {
+        // SAFETY: same range as above, restoring its executable mapping.
         unsafe {
             libc::mprotect(
                 page as *mut libc::c_void,
@@ -272,15 +415,9 @@ impl HookEngine {
                 libc::PROT_READ | libc::PROT_EXEC,
             );
         }
-        flush_icache(site, site + 4);
-        if !patched {
-            return Err(HookError::PatchFailed);
-        }
-        self.slots += 1;
-        self.trampolines += 1;
-        self.used = true;
-        Ok(trampoline as usize)
     }
+    flush_icache(site, site + 4);
+    patched
 }
 
 /// Map one page at the first free address in `first..last`, above the app.
@@ -338,6 +475,7 @@ unsafe fn make_writable(_address: usize, _length: usize) -> bool {
 /// `address..address + length` must be a mapped page range owned by this process.
 #[cfg(target_os = "linux")]
 unsafe fn make_writable(address: usize, length: usize) -> bool {
+    // SAFETY: the caller guarantees the mapped range owned by this process.
     unsafe {
         libc::mprotect(
             address as *mut libc::c_void,
@@ -396,28 +534,55 @@ fn flush_icache(_start: usize, _end: usize) {}
 /// The hook engine for the loaded app, created on first use.
 static ENGINE: std::sync::OnceLock<std::sync::Mutex<HookEngine>> = std::sync::OnceLock::new();
 
-/// Install a hook at `base + offset`, returning the trampoline that runs the
-/// displaced prologue.
+/// Prepare a hook at `base + offset`, returning the trampoline that runs the
+/// displaced prologue.  The site is patched only by [`commit`].
 ///
 /// # Safety
 ///
 /// `base` must be the app's load address, `offset` a site inside the image and
-/// `handler` a function with the same ABI as the hooked one.
-pub unsafe fn install(base: usize, offset: usize, handler: usize) -> Option<usize> {
+/// `handler` a function with the same ABI as the hooked one.  Preparation must
+/// run before application threads start.
+pub unsafe fn prepare(base: usize, offset: usize, handler: usize) -> Option<usize> {
     if base == 0 || offset == 0 {
         return None;
     }
     let engine = ENGINE.get_or_init(|| {
-        let firmware = Firmware::from_base(base);
+        // SAFETY: the caller guarantees `base` is the verified image.
+        let firmware = unsafe { Firmware::from_base(base) };
         std::sync::Mutex::new(
             HookEngine::new(firmware).unwrap_or_else(|_| HookEngine::disabled(firmware)),
         )
     });
     let mut engine = engine.lock().ok()?;
-    engine.install(offset, handler).ok()
+    // SAFETY: the caller guarantees the site, handler and startup-only preparation.
+    unsafe { engine.prepare(offset, handler) }.ok()
 }
 
-/// Whether at least one hook was installed.
+/// Seal the prepared code pages and publish every branch.
+///
+/// Returns `false` when sealing or patching failed; in that case no branch is
+/// live, previously patched sites have been restored, and the pages are
+/// released.
+pub fn commit() -> bool {
+    let Some(engine) = ENGINE.get() else {
+        return false;
+    };
+    let Ok(mut engine) = engine.lock() else {
+        return false;
+    };
+    engine.seal().is_ok() && engine.commit().is_ok()
+}
+
+/// Drop every prepared hook and release the code pages.
+pub fn abort() {
+    if let Some(engine) = ENGINE.get()
+        && let Ok(mut engine) = engine.lock()
+    {
+        engine.abort();
+    }
+}
+
+/// Whether at least one hook was published.
 #[must_use]
 pub fn touched() -> bool {
     ENGINE
@@ -426,18 +591,31 @@ pub fn touched() -> bool {
         .is_some_and(|engine| engine.touched())
 }
 
-/// Mark the hook pages executable once every hook is in place.
-pub fn seal() {
-    if let Some(engine) = ENGINE.get()
-        && let Ok(engine) = engine.lock()
-    {
-        let _ = engine.seal();
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{displaced_words, encode_branch, is_pc_relative};
+    use super::{HookEngine, HookError, displaced_words, encode_branch, is_pc_relative};
+    use crate::image::Firmware;
+
+    #[test]
+    fn a_failed_site_patch_stops_before_writing() {
+        // The host cannot make an arbitrary page writable, so the patch must
+        // fail without reaching the write.
+        assert!(!super::patch_site(0, 0x1400_0000));
+    }
+
+    #[test]
+    fn nothing_is_published_without_an_executable_seal() {
+        // SAFETY: the handle is only used for address arithmetic; no page maps
+        // on the host, so every phase must refuse.
+        let firmware = unsafe { Firmware::from_base(0x1000) };
+        let mut engine = HookEngine::disabled(firmware);
+        // SAFETY: the handler is never reached because there are no pages.
+        let prepared = unsafe { engine.prepare(0x10, 0x20) };
+        assert_eq!(prepared, Err(HookError::NoPages));
+        assert_eq!(engine.seal(), Err(HookError::PatchFailed));
+        assert_eq!(engine.commit(), Err(HookError::PatchFailed));
+        assert!(!engine.touched());
+    }
 
     #[test]
     fn branch_encoding_matches_the_architecture() {

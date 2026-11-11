@@ -5,6 +5,7 @@
 //! predicate, not by guessing from state the mod tracks itself.
 
 use crate::image;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The Sample page's vtable, as an offset from the image base.
 pub const SAMPLE_PAGE_VTABLE: usize = 0x6e2_12a0;
@@ -16,19 +17,17 @@ const CHOP_PREDICATE: usize = 0x112_fd50;
 /// The Sample page the mod last painted.  It keeps its exported name because the
 /// device tests find the page through it.
 #[unsafe(no_mangle)]
-pub static mut g_screen: usize = 0;
+pub static g_screen: AtomicUsize = AtomicUsize::new(0);
 
 /// The sample page the mod last painted, or zero.
 #[must_use]
 pub fn screen() -> usize {
-    // SAFETY: only the UI thread writes it.
-    unsafe { core::ptr::addr_of!(g_screen).read() }
+    g_screen.load(Ordering::Acquire)
 }
 
 /// Record the sample page the paint hook just saw.
-pub fn set_screen(screen: usize) {
-    // SAFETY: only the UI thread writes it.
-    unsafe { core::ptr::addr_of_mut!(g_screen).write(screen) };
+pub(crate) fn set_screen(screen: usize) {
+    g_screen.store(screen, Ordering::Release);
 }
 
 /// Whether `screen` is a Sample page.
@@ -40,8 +39,11 @@ pub fn is_sample_page(screen: usize) -> bool {
 }
 
 /// Whether the Sample page is visible and showing a sample.
+///
+/// # Safety
+/// `screen` must be a live native page on its owning UI thread.
 #[must_use]
-pub fn visible(screen: usize) -> bool {
+pub unsafe fn visible(screen: usize) -> bool {
     if !is_sample_page(screen) {
         return false;
     }
@@ -50,8 +52,11 @@ pub fn visible(screen: usize) -> bool {
 }
 
 /// Whether the Sample page is in chop mode.
+///
+/// # Safety
+/// `screen` must be a live native page on its owning UI thread.
 #[must_use]
-pub fn chop_mode(screen: usize) -> bool {
+pub unsafe fn chop_mode(screen: usize) -> bool {
     if !is_sample_page(screen) {
         return false;
     }
@@ -70,8 +75,10 @@ mod tests {
 
     #[test]
     fn a_null_screen_is_never_a_sample_page() {
-        assert!(!visible(0));
-        assert!(!chop_mode(0));
+        // SAFETY: null is rejected without native calls.
+        assert!(!unsafe { visible(0) });
+        // SAFETY: null is rejected without native calls.
+        assert!(!unsafe { chop_mode(0) });
         assert_eq!(SAMPLE_PAGE_VTABLE, 0x6e2_12a0);
         assert_eq!(CHOP_VIEW, 0x1ee0);
     }

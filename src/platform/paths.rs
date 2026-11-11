@@ -7,8 +7,11 @@
 //! 1. the holder the sample object points at (`sample + 0x30` → `+0x120`);
 //! 2. a scan of the object's pointer graph for a path naming a WAV of exactly
 //!    the expected length;
-//! 3. for a recording, a unique file under `/data/TempProjects` with exactly
-//!    the expected length, channel count and rate.
+//! 3. only for an explicit recording context ([`for_recording`]), the one file
+//!    in that recording's own project directory whose geometry matches.
+//!
+//! [`for_sample`] never scans other projects: a geometry match alone is not
+//! proof that a temporary file is the selected recording.
 //!
 //! A path is only accepted when its WAV header matches the sample's own
 //! geometry, so a stale string in a reused object cannot point at the wrong
@@ -29,7 +32,11 @@ const ROOTS: [&[u8]; 4] = [b"/data/", b"/media/", b"/usr/share/", b"/factory/"];
 const MIN_PATH: usize = 6;
 const MAX_PATH: usize = 500;
 
-/// The path of the WAV that backs `sample`, if the app has one.
+/// The path of the WAV that backs `sample`, from the sample's own object graph.
+///
+/// This never guesses across temporary projects; a freshly recorded sample has
+/// no path until it is saved, and callers with explicit recording context use
+/// [`for_recording`] instead.
 #[must_use]
 pub fn for_sample(sample: usize, frames: u32, channels: u16, rate: u32) -> Option<PathBuf> {
     if let Some(path) = from_object(sample, frames)
@@ -42,7 +49,24 @@ pub fn for_sample(sample: usize, frames: u32, channels: u16, rate: u32) -> Optio
     {
         return Some(path);
     }
-    unique(Path::new(TEMP_PROJECTS), frames, channels, rate)
+    None
+}
+
+/// The path of a recording that has no stored path yet.
+///
+/// `project` must be the project directory the recording belongs to; only that
+/// directory is searched, and only when exactly one WAV has the requested
+/// geometry.  This is the explicit recording context [`for_sample`] refuses to
+/// invent.
+#[must_use]
+pub fn for_recording(
+    sample: usize,
+    frames: u32,
+    channels: u16,
+    rate: u32,
+    project: &Path,
+) -> Option<PathBuf> {
+    for_sample(sample, frames, channels, rate).or_else(|| unique(project, frames, channels, rate))
 }
 
 /// The path the sample object points at directly.
@@ -91,10 +115,12 @@ pub fn from_object_graph(object: usize, frames: u32) -> Option<PathBuf> {
     None
 }
 
-/// A unique file under `root` with exactly this geometry.
+/// The one existing file under `root` with exactly this geometry.
 ///
-/// Frame count alone is not a safe identity, so this is only used for a
-/// recording that has no path yet, and only when exactly one file matches.
+/// This finds an existing matching file; it does not create a path or a file.
+/// Frame count alone is not a safe identity, so the answer is `None` unless
+/// exactly one file matches, and callers should pass the recording's own project
+/// directory rather than all temporary projects.
 #[must_use]
 pub fn unique(root: &Path, frames: u32, channels: u16, rate: u32) -> Option<PathBuf> {
     let mut found: Option<PathBuf> = None;
@@ -213,7 +239,7 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
-    use super::{contains_ignore_case, find, in_text_under, unique};
+    use super::{contains_ignore_case, find, for_recording, for_sample, in_text_under, unique};
 
     /// Make a project directory holding one WAV with the given geometry.
     fn wav(name: &str, frames: u32, channels: u16) -> PathBuf {
@@ -272,6 +298,25 @@ mod tests {
         // A second file with the same geometry makes the answer ambiguous.
         std::fs::copy(project.join("unique.wav"), project.join("copy.wav")).expect("copy");
         assert_eq!(unique(&root, 64, 2, 44_100), None, "two matches");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_recording_fallback_is_scoped_to_its_own_project() {
+        let root = wav("scoped", 64, 2);
+        let project = root.join("Temp-Project_[ProjectData]/scoped.wav");
+        // The explicit context finds it; an unrelated project directory does not.
+        assert_eq!(
+            for_recording(0, 64, 2, 44_100, &root),
+            Some(project.clone())
+        );
+        let other = std::env::temp_dir().join("minimod-paths-unrelated");
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).expect("other dir");
+        assert_eq!(for_recording(0, 64, 2, 44_100, &other), None);
+        // Without an explicit recording context there is no cross-project scan.
+        assert_eq!(for_sample(0, 64, 2, 44_100), None);
+        std::fs::remove_dir_all(&other).ok();
         std::fs::remove_dir_all(root).ok();
     }
 

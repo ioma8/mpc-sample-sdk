@@ -1,8 +1,8 @@
 # Process-wide state
 
 A mod usually needs state that outlives one callback: a menu row, a mode flag, a
-job handle. `state::Global<T>` gives a static a safe accessor without `static
-mut`, raw pointers or `unsafe` in the feature crate.
+job handle. `state::Global<T>` preserves a static’s layout without `static mut`. Its accessors are unsafe:
+the caller must enforce single-thread access and Rust’s borrowing rules.
 
 > `Global` is **single-threaded**. Touch it from the app's UI thread only. For
 > audio-thread data use atomics or a ring buffer, not `Global`.
@@ -21,18 +21,21 @@ struct UiState {
 static UI: Global<UiState> = Global::new(UiState { open: false, row: 0 });
 
 fn open() {
-    UI.with_mut(|state| {
+    // SAFETY: UI-thread access, with no overlapping references or reentry.
+    unsafe { UI.with_mut(|state| {
         state.open = true;
         state.row = 0;
-    });
+    }); }
 }
 
 fn row() -> i32 {
-    UI.with(|state| state.row)
+    // SAFETY: UI-thread access with no active mutable borrow.
+    unsafe { UI.with(|state| state.row) }
 }
 
 fn close() {
-    UI.get_mut().open = false;
+    // SAFETY: UI-thread access with no overlapping references.
+    unsafe { UI.get_mut().open = false; }
 }
 ```
 
@@ -81,8 +84,11 @@ struct StateMod;
 impl Mod for StateMod {
     fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
         if event.code == 0x6f && event.pressed {
-            TOGGLE.with_mut(|state| state.on = !state.on);
-            mpc_sample_sdk::draw::show_toast(if TOGGLE.with(|state| state.on) {
+            // SAFETY: UI callback; borrows end before invoking firmware.
+            let on = unsafe {
+                TOGGLE.with_mut(|state| { state.on = !state.on; state.on })
+            };
+            mpc_sample_sdk::draw::show_toast(if on {
                 "on"
             } else {
                 "off"
@@ -98,3 +104,7 @@ mpc_sample_sdk::export_mod!(StateMod);
 
 If a worker needs to report progress, store an atomic (`AtomicI32`,
 `AtomicBool`) and let the UI poll it; do not write `Global` from the worker.
+
+Migration from v0.1.10: audit each accessor call for thread ownership, overlapping
+references and callback reentry before adding its unsafe block. Never hold a
+mutable state reference across a firmware call that can invoke another callback.

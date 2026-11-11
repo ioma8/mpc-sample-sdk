@@ -67,3 +67,16 @@ firmware memory through raw pointers in feature code; use the typed platform
 helpers (`page`, `selection`, `sample`, `pads`, `slice`, `control`, `image`).
 The raw `image::read`/`read_u32`/`read_pointer` helpers exist for the SDK and for
 advanced diagnostics.
+
+`image::write` is unsafe: a successful kernel write does not establish Rust
+aliasing safety or firmware object validity. The caller must establish exclusive
+access and preserve the target object’s invariants. `Firmware::from_base` is
+unsafe and only represents an address; it does not authenticate firmware or
+authorize calls. Use `Firmware::find`, which checks the unnamed image covering
+the tested firmware's probe offset.
+
+Hook installation is two phase. `hook::prepare` writes the relay slots and
+trampolines into writable, non-executable pages; `hook::commit` seals them
+executable, then patches each site and verifies the word. A sealing or patching
+failure rolls back every published site and releases the pages, so installation
+never reports success while a branch targets non-executable memory.

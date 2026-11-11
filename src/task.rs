@@ -7,7 +7,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 /// What a task can report when it is taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +101,15 @@ impl<T> Task<T> {
         if self.shared.taken.swap(true, Ordering::AcqRel) {
             return Err(TaskError::AlreadyTaken);
         }
-        let Some(outcome) = lock(&self.shared.outcome).take() else {
+        let mut slot = match self.shared.outcome.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                self.shared.taken.store(false, Ordering::Release);
+                return Err(TaskError::Running);
+            }
+        };
+        let Some(outcome) = slot.take() else {
             self.shared.taken.store(false, Ordering::Release);
             return Err(TaskError::Running);
         };
@@ -133,6 +141,16 @@ mod tests {
                 other => return other,
             }
         }
+    }
+
+    #[test]
+    fn polling_a_locked_result_returns_running() {
+        let mut task = Task::spawn(1, 7, |_| Ok(()));
+        let shared = std::sync::Arc::clone(&task.shared);
+        let guard = super::lock(&shared.outcome);
+        assert_eq!(task.take(), Err(TaskError::Running));
+        drop(guard);
+        assert_eq!(wait(&mut task), Ok(7));
     }
 
     #[test]

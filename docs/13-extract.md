@@ -11,24 +11,27 @@ use mpc_sample_sdk::platform::extract::{self, Request};
 
 fn create_pad() {
 let screen = mpc_sample_sdk::platform::page::screen();
-let Some(selected) = mpc_sample_sdk::platform::selection::current(screen) else {
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+let Some(selected) = unsafe { mpc_sample_sdk::platform::selection::current(screen) } else {
     return;
 };
 
-let audio = vec![0.0_f32; selected.frames as usize * selected.channels as usize];
+let audio = vec![0.0_f32; selected.frames() as usize * selected.channels() as usize];
 let request = Request {
     screen,
-    state: selected.state,
+    state: selected.state(),
     name: c"Demo",
     buffer: Some(&audio),
-    source_frames: selected.frames,
-    channels: u32::from(selected.channels),
+    source_frames: selected.frames(),
+    channels: u32::from(selected.channels()),
     start: 0,
-    end: selected.frames,
+    end: selected.frames(),
     destination: None,
 };
 
-match extract::run(&request) {
+// SAFETY: the request uses the live page/state from this UI callback and the
+// buffer outlives the call; no other code mutates the program meanwhile.
+match unsafe { extract::run(&request) } {
     Ok(extracted) => {
         mpc_sample_sdk::platform::status::set_status(&format!(
             "created pad {}",
@@ -65,12 +68,14 @@ use mpc_sample_sdk::platform::{pads, selection};
 
 fn has_room() {
 let screen = mpc_sample_sdk::platform::page::screen();
-let Some(selected) = selection::current(screen) else {
+// SAFETY: `screen` is the live Sample page recorded by the paint hook.
+let Some(selected) = unsafe { selection::current(screen) } else {
     return;
 };
-let program = selection::program(selected.state);
+let program = selection::program(selected.state());
 
-if !pads::has_room(program, 1) {
+// SAFETY: `program` came from the live selection in this UI callback.
+if !unsafe { pads::has_room(program, 1) } {
     mpc_sample_sdk::platform::status::set_status("need 1 empty pad");
     return;
 }

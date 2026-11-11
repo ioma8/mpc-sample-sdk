@@ -26,6 +26,8 @@ pub type PitchOffset = unsafe extern "C" fn(usize, u64, u64, i32);
 const EVENT_TYPE: usize = 8;
 const EVENT_VELOCITY: usize = 0x10;
 const EVENT_NOTE: usize = 0x30;
+/// The most bytes of an event the SDK reads or rewrites.
+pub(crate) const EVENT_BYTES: usize = EVENT_NOTE + 1;
 /// `[event + 0x14]` is the property mask, `+0x16` its value.
 const EVENT_MASK: usize = 0x14;
 const EVENT_PROPERTY: usize = 0x16;
@@ -62,8 +64,9 @@ pub fn decode(event: &[u8], source: u64) -> Note {
         .and_then(|bytes| bytes.try_into().ok())
         .map_or(0.0, f32::from_le_bytes);
     let note = event.get(EVENT_NOTE).copied().unwrap_or(0xff);
-    let source_id = (source as u32).cast_signed();
-    let external = source_id <= EXTERNAL_SOURCE_LIMIT || source_id == EXTERNAL_SOURCE_ALT;
+    let source_id = source as u32;
+    let external =
+        source_id <= EXTERNAL_SOURCE_LIMIT as u32 || source_id == EXTERNAL_SOURCE_ALT as u32;
     let note_on = kind == PAD_EVENT && velocity > 0.0;
     let note_off =
         note <= 127 && ((kind == PAD_EVENT && velocity <= 0.0) || kind == NOTE_OFF_EVENT);
@@ -95,10 +98,9 @@ struct Saved {
 ///
 /// # Safety
 ///
-/// `event` must be writable for `EVENT_NOTE + 1` bytes, and `pitch_off` must be
-/// the app's displaced setter when present.
+/// `pitch_off` must be the app's displaced setter when present.
 unsafe fn replay(
-    event: *mut u8,
+    event: &mut [u8],
     pad_level_byte: u8,
     row: i32,
     pitch_off: Option<PitchOffset>,
@@ -108,55 +110,45 @@ unsafe fn replay(
         property: 0,
         note: 0xff,
     };
-    if event.is_null() {
+    if event.len() <= EVENT_NOTE {
         return saved;
     }
-    // SAFETY: the caller promises the event is writable for the fields below.
-    unsafe {
-        saved.mask = core::ptr::read_unaligned(event.add(EVENT_MASK).cast::<u16>());
-        saved.property = *event.add(EVENT_PROPERTY);
-        saved.note = *event.add(EVENT_NOTE);
-        core::ptr::write_unaligned(event.add(EVENT_MASK).cast::<u16>(), 0);
-        *event.add(EVENT_NOTE) = pad_level_byte;
-    }
+    saved.mask = u16::from_le_bytes([event[EVENT_MASK], event[EVENT_MASK + 1]]);
+    saved.property = event[EVENT_PROPERTY];
+    saved.note = event[EVENT_NOTE];
+    event[EVENT_MASK..EVENT_MASK + 2].copy_from_slice(&0_u16.to_le_bytes());
+    event[EVENT_NOTE] = pad_level_byte;
     if let Some(setter) = pitch_off {
         // SAFETY: the caller guarantees this is the app's setter, and the
         // property triple it expects starts at `+0x14`.
         unsafe {
-            setter(event.wrapping_add(EVENT_MASK) as usize, 0, 0, row);
+            setter(event.as_mut_ptr().add(EVENT_MASK) as usize, 0, 0, row);
         }
     }
     saved
 }
 
 /// Put back what [`replay`] changed.
-///
-/// # Safety
-///
-/// `event` must be the same writable event the replay was given.
-unsafe fn restore(event: *mut u8, saved: Saved) {
-    if event.is_null() {
+fn restore(event: &mut [u8], saved: Saved) {
+    if event.len() <= EVENT_NOTE {
         return;
     }
-    // SAFETY: the caller promises the event is writable for these fields.
-    unsafe {
-        core::ptr::write_unaligned(event.add(EVENT_MASK).cast::<u16>(), saved.mask);
-        *event.add(EVENT_PROPERTY) = saved.property;
-        *event.add(EVENT_NOTE) = saved.note;
-    }
+    event[EVENT_MASK..EVENT_MASK + 2].copy_from_slice(&saved.mask.to_le_bytes());
+    event[EVENT_PROPERTY] = saved.property;
+    event[EVENT_NOTE] = saved.note;
 }
 
 /// One note event, decoded and ready to be replayed.
 ///
 /// The mod reads the fields, optionally calls [`NoteEvent::replay_as_pad`], and
 /// returns [`crate::NoteFlow`]; the SDK forwards and restores the event.
-pub struct NoteEvent {
+pub struct NoteEvent<'event> {
     /// The app's `this` pointer.
     pub app: usize,
     /// The context the app passed with the event.
     pub context: usize,
-    /// The app's event object, writable while the hook runs.
-    pub event: *mut u8,
+    /// The app's event object, borrowed exclusively for this callback.
+    event: &'event mut [u8],
     /// The source id the app passed.
     pub source: u64,
     /// The event's type tag.
@@ -187,38 +179,30 @@ pub struct NoteEvent {
     pitch_off: Option<PitchOffset>,
 }
 
-impl NoteEvent {
-    /// Decode the event behind `event`.
+impl<'event> NoteEvent<'event> {
+    /// Decode one event borrowed from the app for the duration of the hook.
     ///
     /// # Safety
     ///
-    /// `event` must be readable for `EVENT_NOTE + 1` bytes or null.
+    /// `pitch_off`, if supplied, must have the firmware setter ABI.  The caller
+    /// must not alias `event` through another reference while the returned value
+    /// is alive.
     #[must_use]
-    pub unsafe fn new(
+    pub(crate) unsafe fn new(
         app: usize,
         context: usize,
-        event: *mut u8,
+        event: &'event mut [u8],
         source: u64,
         pitch_off: Option<PitchOffset>,
     ) -> Self {
-        let bytes = if event.is_null() {
-            &[][..]
+        let note = decode(event, source);
+        let (mask, property) = if event.len() > EVENT_PROPERTY {
+            (
+                u16::from_le_bytes([event[EVENT_MASK], event[EVENT_MASK + 1]]),
+                event[EVENT_PROPERTY],
+            )
         } else {
-            // SAFETY: the caller promises readability for these bytes.
-            unsafe { core::slice::from_raw_parts(event, EVENT_NOTE + 1) }
-        };
-        let note = decode(bytes, source);
-        // SAFETY: the caller promises readability for the whole event.
-        let (mask, property) = if event.is_null() {
             (0, 0)
-        } else {
-            // SAFETY: the caller promised the event is readable for these fields.
-            unsafe {
-                (
-                    core::ptr::read_unaligned(event.add(EVENT_MASK).cast::<u16>()),
-                    *event.add(EVENT_PROPERTY),
-                )
-            }
         };
         Self {
             app,
@@ -246,11 +230,14 @@ impl NoteEvent {
     /// Returns `false` when the event is not writable, in which case the caller
     /// must fall back to a plain forward.
     pub fn replay_as_pad(&mut self, pad: u8, row: i32, context: usize) -> bool {
-        if self.event.is_null() {
+        if self.event.len() <= EVENT_NOTE {
             return false;
         }
-        // SAFETY: the site promises the event is writable for the hook.
-        self.saved = Some(unsafe { replay(self.event, pad, row, self.pitch_off) });
+        // SAFETY: the site promises `pitch_off` is the app's setter.
+        let saved = unsafe { replay(self.event, pad, row, self.pitch_off) };
+        // Keep the first snapshot: replaying twice must still restore the bytes
+        // the app wrote, not the first replay's rewrite.
+        self.saved.get_or_insert(saved);
         self.forward_context = context;
         self.forward_source = REPLAY_SOURCE;
         true
@@ -271,15 +258,31 @@ impl NoteEvent {
     /// Put the event back the way the app wrote it.
     pub fn restore(&mut self) {
         if let Some(saved) = self.saved.take() {
-            // SAFETY: the saved fields belong to the same event.
-            unsafe { restore(self.event, saved) };
+            restore(&mut *self.event, saved);
+            self.forward_context = self.context;
+            self.forward_source = self.source;
+        }
+    }
+
+    /// The app's event pointer, for the displaced dispatcher.
+    ///
+    /// A null event decodes as an empty borrow; forward null in that case rather
+    /// than the empty slice's dangling pointer.
+    pub(crate) fn pointer(&self) -> *mut u8 {
+        if self.event.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            self.event.as_ptr().cast_mut()
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Note, NoteEvent, REPLAY_SOURCE, ROW_ORIGIN, decode};
+    use super::{
+        EXTERNAL_SOURCE_ALT, EXTERNAL_SOURCE_LIMIT, Note, NoteEvent, REPLAY_SOURCE, ROW_ORIGIN,
+        decode,
+    };
 
     fn event(kind: u8, velocity: f32, note: u8) -> [u8; 0x40] {
         let mut bytes = [0_u8; 0x40];
@@ -301,14 +304,50 @@ mod tests {
     #[test]
     fn a_replayed_event_restores_the_original_bytes() {
         let mut bytes = event(3, 0.8, 64);
-        // SAFETY: the buffer is a whole event.
-        let mut note = unsafe { NoteEvent::new(0, 0, bytes.as_mut_ptr(), 0, None) };
-        assert_eq!(note.note, 64);
-        assert!(note.replay_as_pad(7, 3, 0x1000));
-        assert_eq!(bytes[0x30], 7);
-        assert_eq!(note.forward_source(), REPLAY_SOURCE);
-        note.restore();
+        {
+            // SAFETY: the buffer is a whole event and no setter is supplied.
+            let mut note = unsafe { NoteEvent::new(0, 0, &mut bytes, 0, None) };
+            assert_eq!(note.note, 64);
+            assert!(note.replay_as_pad(7, 3, 0x1000));
+            assert_eq!(note.forward_source(), REPLAY_SOURCE);
+            note.restore();
+        }
         assert_eq!(bytes[0x30], 64);
+    }
+
+    #[test]
+    fn replaying_twice_still_restores_the_original_event() {
+        let mut bytes = event(3, 0.8, 64);
+        bytes[0x14..0x16].copy_from_slice(&0x1234_u16.to_le_bytes());
+        bytes[0x16] = 0x5a;
+        {
+            // SAFETY: the buffer is a whole event and no setter is supplied.
+            let mut note = unsafe { NoteEvent::new(0, 0, &mut bytes, 0, None) };
+            assert!(note.replay_as_pad(7, 3, 0x1000));
+            assert!(note.replay_as_pad(9, 4, 0x2000));
+            note.restore();
+        }
+        assert_eq!(bytes[0x30], 64, "the app's note must come back");
+        assert_eq!(bytes[0x14..0x16], 0x1234_u16.to_le_bytes());
+        assert_eq!(bytes[0x16], 0x5a);
+    }
+
+    #[test]
+    fn the_replay_source_is_not_classified_as_external() {
+        let sample = event(3, 0.8, 64);
+        assert!(decode(&sample, 0x10).external);
+        assert!(decode(&sample, EXTERNAL_SOURCE_LIMIT as u64).external);
+        assert!(decode(&sample, EXTERNAL_SOURCE_ALT as u64).external);
+        assert!(!decode(&sample, REPLAY_SOURCE).external);
+        assert!(!decode(&sample, u64::from(u32::MAX)).external);
+    }
+
+    #[test]
+    fn a_null_event_forwards_as_null() {
+        // SAFETY: the empty borrow is a placeholder for a null app event.
+        let note = unsafe { NoteEvent::new(0, 0, &mut [], 0, None) };
+        assert!(note.pointer().is_null());
+        assert!(!note.note_on && !note.note_off);
     }
 
     #[test]

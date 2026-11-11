@@ -22,8 +22,11 @@ pub struct Firmware {
 /// without being handed it at every entry point.
 static BASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// Record the image base; the loader calls this once.
-pub fn set_base(base: usize) {
+/// Record the verified image base once before callbacks can run.
+///
+/// # Safety
+/// The base must identify the supported firmware for the process lifetime.
+pub(crate) unsafe fn set_base(base: usize) {
     BASE.store(base, core::sync::atomic::Ordering::Release);
 }
 
@@ -34,9 +37,15 @@ pub fn base() -> usize {
 }
 
 impl Firmware {
-    /// The app's image at `base`, as reported by the dynamic loader.
+    /// Wrap `base` as an image handle without authenticating it.
+    ///
+    /// # Safety
+    ///
+    /// `base` must be the load address of the supported firmware image for the
+    /// life of the process, as [`Self::find`] establishes.  Every address
+    /// derived from this handle is called or read as firmware.
     #[must_use]
-    pub const fn from_base(base: usize) -> Self {
+    pub const unsafe fn from_base(base: usize) -> Self {
         Self { base }
     }
 
@@ -46,7 +55,11 @@ impl Firmware {
     /// the probe offset inside the tested firmware; a library never does.
     #[must_use]
     pub fn find() -> Option<Self> {
-        platform::find_base().map(Self::from_base)
+        platform::find_base().map(|base| {
+            // SAFETY: find_base only reports the unnamed image covering the
+            // tested firmware's probe offset.
+            unsafe { Self::from_base(base) }
+        })
     }
 
     /// Load address of the image.
@@ -69,8 +82,13 @@ pub fn read(address: usize, out: &mut [u8]) -> bool {
 }
 
 /// Write all of `bytes` to process memory.
+///
+/// # Safety
+/// The destination must be writable for this operation, with no conflicting
+/// references or concurrent accesses. The bytes must preserve the destination
+/// object’s validity and all firmware invariants. A failed write may be partial.
 #[must_use]
-pub fn write(address: usize, bytes: &[u8]) -> bool {
+pub unsafe fn write(address: usize, bytes: &[u8]) -> bool {
     platform::write(address, bytes)
 }
 
@@ -206,7 +224,7 @@ mod platform {
     use std::sync::OnceLock;
 
     /// Offset inside the stock app's text segment, used to recognise which
-    /// loaded image is the app.  Any PT_LOAD that covers it belongs to firmware
+    /// loaded image is the app.  Any `PT_LOAD` that covers it belongs to firmware
     /// 1.3.0.12.
     const APP_PROBE_OFFSET: usize = 0x00b5_5b00;
 
@@ -226,8 +244,11 @@ mod platform {
         _size: usize,
         data: *mut c_void,
     ) -> i32 {
+        // SAFETY: data points to the live Search supplied by find_base.
         let search = unsafe { &mut *data.cast::<Search>() };
+        // SAFETY: the loader supplies a valid dl_phdr_info.
         let info = unsafe { &*info };
+        // SAFETY: a nonnull loader name points to a terminated string.
         if !info.dlpi_name.is_null() && unsafe { *info.dlpi_name } != 0 {
             return 0;
         }
@@ -448,9 +469,11 @@ mod tests {
 
     #[test]
     fn addresses_are_relative_to_the_load_base() {
-        let firmware = Firmware::from_base(0xaaaa_aaaa_0000);
+        // SAFETY: the test only checks address arithmetic; no memory is read.
+        let firmware = unsafe { Firmware::from_base(0xaaaa_aaaa_0000) };
         assert_eq!(firmware.addr(0x1234), 0xaaaa_aaaa_1234);
-        assert_eq!(Firmware::from_base(0).addr(0x10), 0x10);
+        // SAFETY: as above.
+        assert_eq!(unsafe { Firmware::from_base(0) }.addr(0x10), 0x10);
     }
 
     #[cfg(target_os = "linux")]

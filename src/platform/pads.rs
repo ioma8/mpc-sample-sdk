@@ -25,10 +25,14 @@ const LAYER_SAMPLE: usize = 0x4a8;
 const LAYER_ACTIVE: usize = 0xb18;
 
 /// The app's count of free pads.
+///
+/// # Safety
+///
+/// `program` must be the live program object on its owning UI thread.
 #[must_use]
-pub fn free_count(program: usize) -> i32 {
+pub unsafe fn free_count(program: usize) -> i32 {
     // SAFETY: `base + FREE_PAD` is the entry the app itself calls with its
-    // program object.
+    // program object, and the caller guarantees the object.
     unsafe { image::int_of_pointer(image::base() + FREE_PAD, program) }
 }
 
@@ -36,19 +40,28 @@ pub fn free_count(program: usize) -> i32 {
 ///
 /// An unknown program (`None` or zero) cannot be proven to have room, so the
 /// answer is `false`; the caller reports the same "need N empty pads" message.
+///
+/// # Safety
+///
+/// A supplied program must be the live program object on its owning UI thread.
 #[must_use]
-pub fn has_room(program: Option<usize>, required: usize) -> bool {
+pub unsafe fn has_room(program: Option<usize>, required: usize) -> bool {
     program
         .filter(|program| *program != 0)
-        .is_some_and(|program| free_estimate(program) >= required)
+        // SAFETY: the caller guarantees the live program object.
+        .is_some_and(|program| unsafe { free_estimate(program) } >= required)
 }
 
 /// How many pads the app's pad states say are free.
 ///
 /// The same two checks the native finder uses: a null pad state, or a pad state
 /// the app reports as not busy.
+///
+/// # Safety
+///
+/// `program` must be the live program object on its owning UI thread.
 #[must_use]
-pub fn free_estimate(program: usize) -> usize {
+pub unsafe fn free_estimate(program: usize) -> usize {
     let Some(first) = image::read_pointer(program + PAD_STATES) else {
         return 0;
     };
@@ -68,7 +81,8 @@ pub fn free_estimate(program: usize) -> usize {
             free += 1;
             continue;
         }
-        // SAFETY: `base + PAD_BUSY` is the app's own predicate for a pad state.
+        // SAFETY: the caller supplied the live program, and `state` is read out
+        // of its own pad table; `base + PAD_BUSY` is the app's own predicate.
         let busy = unsafe { image::int_of_pointer(image::base() + PAD_BUSY, state) };
         if busy == 0 {
             free += 1;
@@ -109,8 +123,13 @@ pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
 ///
 /// Returns `false` if the pad table, layer, or memory write is unavailable. The
 /// update is visible to pad playback immediately and is saved with the project.
+///
+/// # Safety
+///
+/// `surface` must be the live control surface on its owning UI thread, and the
+/// caller must have exclusive access to the layer while it is written.
 #[must_use]
-pub fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
+pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
     let Some(layer) = layer_for_pad(surface, pad) else {
         return false;
     };
@@ -124,7 +143,8 @@ pub fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
         return false;
     };
     let expected = [u8::from(active)];
-    if !image::write(address, &expected) {
+    // SAFETY: the caller guarantees the live layer and exclusive access.
+    if !unsafe { image::write(address, &expected) } {
         return false;
     }
     let mut actual = [0];
@@ -137,8 +157,11 @@ mod tests {
 
     #[test]
     fn an_unknown_program_has_no_proven_room() {
-        assert!(!has_room(None, 1));
-        assert!(!has_room(Some(0), 1));
+        // SAFETY: no program is handed to native code in either case.
+        unsafe {
+            assert!(!has_room(None, 1));
+            assert!(!has_room(Some(0), 1));
+        }
     }
 
     #[test]

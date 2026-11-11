@@ -45,7 +45,8 @@ struct Renderer {
 impl Renderer {
     fn start(&mut self) {
         let screen = mpc_sample_sdk::platform::page::screen();
-        let Some(selected) = mpc_sample_sdk::platform::selection::current(screen) else {
+        // SAFETY: `screen` is the live Sample page recorded by the paint hook.
+        let Some(selected) = unsafe { mpc_sample_sdk::platform::selection::current(screen) } else {
             self.status = "no sample";
             return;
         };
@@ -56,7 +57,7 @@ impl Renderer {
         let job = RenderJob::new(selected, 7, input);
         let task = Task::spawn(screen, job, move |job: &mut RenderJob| {
             // Replace this with your DSP.
-            let channels = u32::from(job.source.channels);
+            let channels = u32::from(job.source.channels());
             let output = RenderOutput::new(job.input.clone(), channels).ok_or(1)?;
             job.push_output(output);
             mpc_sample_sdk::draw::repaint_painted();

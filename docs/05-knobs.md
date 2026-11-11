@@ -80,8 +80,9 @@ The SDK also exposes the app's control setter:
 ```rust
 use mpc_sample_sdk::platform::control;
 
-// pad 4, operation 0, value 0.5
-let _ = control::set(4, 0, 0.5);
+// SAFETY: the SDK remembers the live surface from the control hook; this UI
+// callback runs on its owning thread.
+let _ = unsafe { control::set(4, 0, 0.5) };
 ```
 
 Use this only when you need to drive the app's own control state; ordinary knob

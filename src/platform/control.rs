@@ -5,18 +5,19 @@
 //! mod can apply a control change exactly as the page would.
 
 use crate::image;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The app's control setter, as the page's knobs call it.
 pub type SetControl = unsafe extern "C" fn(usize, usize, i32, i32, f32) -> usize;
 
 /// The setter the SDK displaced.
-static mut ORIGINAL: Option<SetControl> = None;
+static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 /// The control context that came with the surface.
-static mut CONTROL: usize = 0;
+static CONTROL: AtomicUsize = AtomicUsize::new(0);
 
 /// The control-surface object the app last handed to the setter.
 #[unsafe(no_mangle)]
-pub static mut g_surface: usize = 0;
+pub static g_surface: AtomicUsize = AtomicUsize::new(0);
 
 /// How far past the load address a vtable can point and still be the app's.
 const IMAGE_SPAN: usize = 0x1200_0000;
@@ -27,10 +28,7 @@ const IMAGE_SPAN: usize = 0x1200_0000;
 ///
 /// Called once, before the hook can run.
 pub unsafe fn record(original: usize) {
-    // SAFETY: the caller's contract; the address is the trampoline for a setter.
-    unsafe {
-        ORIGINAL = (original != 0).then(|| core::mem::transmute::<usize, SetControl>(original));
-    }
+    ORIGINAL.store(original, Ordering::Release);
 }
 
 /// The app's setter, as a hook: learn the live surface, then pass the call on.
@@ -52,11 +50,11 @@ pub unsafe extern "C" fn hook(
     // SAFETY: only the UI thread calls the setter.
     unsafe {
         if looks_live {
-            g_surface = surface;
-            CONTROL = control;
+            g_surface.store(surface, Ordering::Release);
+            CONTROL.store(control, Ordering::Release);
         }
         // The setter tail-calls the app's own, so its result is its caller's.
-        match ORIGINAL {
+        match original() {
             Some(original) => original(control, surface, id, op, value),
             None => 0,
         }
@@ -66,29 +64,32 @@ pub unsafe extern "C" fn hook(
 /// The surface the page last used, or zero.
 #[must_use]
 pub fn surface() -> usize {
-    // SAFETY: only the UI thread writes it.
-    unsafe { core::ptr::addr_of!(g_surface).read() }
+    g_surface.load(Ordering::Acquire)
 }
 
 /// The control context the page last used, or zero.
 #[must_use]
 pub fn control() -> usize {
-    // SAFETY: only the UI thread writes it.
-    unsafe { core::ptr::addr_of!(CONTROL).read() }
+    CONTROL.load(Ordering::Acquire)
 }
 
 /// The displaced setter, if the site was installed.
 #[must_use]
 pub fn original() -> Option<SetControl> {
-    // SAFETY: written once at install.
-    unsafe { *core::ptr::addr_of!(ORIGINAL) }
+    let address = ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: record requires the matching native setter signature.
+    (address != 0).then(|| unsafe { core::mem::transmute::<usize, SetControl>(address) })
 }
 
 /// Apply one control op to an explicit surface and context.
 ///
+/// # Safety
+/// Objects must be live, matching native objects on their owning UI thread;
+/// the pad, operation and value must be valid for the firmware.
+///
 /// Returns zero when the setter is not installed.
 #[must_use]
-pub fn apply(control: usize, surface: usize, pad: i32, op: i32, value: f32) -> usize {
+pub unsafe fn apply(control: usize, surface: usize, pad: i32, op: i32, value: f32) -> usize {
     match original() {
         // SAFETY: these are the app's own setter and objects.
         Some(original) => unsafe { original(control, surface, pad, op, value) },
@@ -98,9 +99,13 @@ pub fn apply(control: usize, surface: usize, pad: i32, op: i32, value: f32) -> u
 
 /// Apply one control op to `pad` on the surface the page last used.
 ///
+/// # Safety
+/// The remembered objects must remain live on their owning UI thread;
+/// the pad, operation and value must be valid for the firmware.
+///
 /// Returns zero when the setter is not installed or the surface is unknown.
 #[must_use]
-pub fn set(pad: i32, op: i32, value: f32) -> usize {
+pub unsafe fn set(pad: i32, op: i32, value: f32) -> usize {
     let (surface, control, original) = (surface(), control(), original());
     match original {
         // SAFETY: these are the app's own setter and objects.
@@ -116,7 +121,8 @@ mod tests {
     #[test]
     fn an_uninstalled_setter_is_harmless() {
         assert!(original().is_none());
-        assert_eq!(set(0, 0x462, 0.0), 0);
+        // SAFETY: the uninstalled setter returns without calling firmware.
+        assert_eq!(unsafe { set(0, 0x462, 0.0) }, 0);
         let _ = (surface(), control());
     }
 }

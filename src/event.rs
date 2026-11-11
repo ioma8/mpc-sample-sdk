@@ -172,7 +172,11 @@ pub struct PaintEvent {
 /// Every method has a default, so a mod overrides only what it needs.  The SDK
 /// installs the hooks, decodes the events, forwards whatever the mod does not
 /// consume, and keeps the app's originals private.
-pub trait Mod: 'static {
+///
+/// The app dispatches from several threads, so the module must be `Send`.  The
+/// SDK still guarantees one exclusive `&mut self` at a time; an overlapping or
+/// reentrant callback is forwarded without invoking the mod.
+pub trait Mod: Send + 'static {
     /// The hooks are installed and the firmware has been verified.
     fn on_start(&mut self) {}
 

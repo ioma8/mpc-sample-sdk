@@ -99,15 +99,37 @@ const SCREEN_SELECTION: usize = 0x180;
 /// `[selection + 0x618]` is where the selection index goes.
 const SELECTION_INDEX: usize = 0x618;
 
+/// Whether `positions` is a complete, ordered replacement for a sample.
+///
+/// The Reset call discards the existing slices, so the replacement has to be
+/// known-good first: non-empty, strictly increasing, in range and within the
+/// app's slice limit.
+#[must_use]
+fn valid_positions(positions: &[u32], frames: u32) -> bool {
+    !positions.is_empty()
+        && u64::try_from(positions.len()).is_ok_and(|count| count <= MAX_SLICES)
+        && frames > 0
+        && positions.iter().all(|position| *position < frames)
+        && positions.windows(2).all(|pair| pair[0] < pair[1])
+}
+
 /// Write the requested boundaries through the app's own Reset/Insert calls and
 /// check the result back.
 ///
 /// The app owns the slice allocation, its listeners and the broadcasts, so the
-/// only safe way to chop is to drive its calls in order and then read the
-/// result: a short write shows up as a mismatch in [`verify`], never as a
-/// quietly wrong pad.
+/// only way to chop is to drive its calls in order and then read the result: a
+/// short write shows up as a mismatch in [`verify`], never as a quietly wrong
+/// pad.  The complete replacement is validated before Reset discards the current
+/// slices.
+///
+/// # Safety
+///
+/// `sample` and `screen` must be live app objects on their owning UI thread.
 #[must_use]
-pub fn write_markers(sample: usize, positions: &[u32], frames: u32, screen: usize) -> bool {
+pub unsafe fn write_markers(sample: usize, positions: &[u32], frames: u32, screen: usize) -> bool {
+    if !valid_positions(positions, frames) {
+        return false;
+    }
     let Some(slices) = slice_count(sample) else {
         return false;
     };
@@ -164,8 +186,12 @@ const BINDING_FALLBACK: usize = 0x80;
 /// The stock Split handler drives the binding's model callback; assigning the
 /// view's cached enum alone does not take, which is why this goes through the
 /// callback whenever the binding is still alive.
+///
+/// # Safety
+///
+/// `screen` must be a live Sample page on its owning UI thread.
 #[must_use]
-pub fn set_manual(screen: usize) -> bool {
+pub unsafe fn set_manual(screen: usize) -> bool {
     let Some(binding) = screen
         .checked_add(SCREEN_BINDING)
         .and_then(image::read_pointer)
@@ -198,7 +224,8 @@ pub fn set_manual(screen: usize) -> bool {
             return false;
         }
         let mut manual: i32 = 0;
-        // SAFETY: the binding's invoke slot is the app's model callback.
+        // SAFETY: the caller guarantees the live page; the binding's invoke slot
+        // is the app's model callback.
         unsafe {
             image::void_of_three_pointers(
                 invoke,
@@ -208,7 +235,8 @@ pub fn set_manual(screen: usize) -> bool {
             );
         }
     } else {
-        // SAFETY: the fallback is the app's own cached-mode setter.
+        // SAFETY: the caller guarantees the live page; the fallback is the
+        // app's own cached-mode setter.
         unsafe {
             image::void_of_pointer_value(
                 image::base() + SET_CHOP_MODE,
@@ -233,7 +261,9 @@ pub fn chop_kind(screen: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SLICES, SAMPLE_METADATA, SLICE_BYTES, SLICE_END, SLICE_START};
+    use super::{
+        MAX_SLICES, SAMPLE_METADATA, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions,
+    };
 
     #[test]
     fn the_object_layout_matches_the_reverse_engineering() {
@@ -248,5 +278,18 @@ mod tests {
     fn a_zero_sample_has_no_slices() {
         assert!(super::slice_count(0).is_none());
         assert!(!super::verify(0, &[0], 100));
+    }
+
+    #[test]
+    fn a_replacement_is_validated_before_reset() {
+        assert!(valid_positions(&[0, 10, 20], 100));
+        assert!(!valid_positions(&[], 100), "empty replacement");
+        assert!(!valid_positions(&[10, 0], 100), "out of order");
+        assert!(!valid_positions(&[0, 10, 10], 100), "duplicate boundary");
+        assert!(!valid_positions(&[0, 100], 100), "start at the end");
+        assert!(!valid_positions(&[0, 200], 100), "past the end");
+        assert!(!valid_positions(&[0], 0), "empty sample");
+        let too_many = vec![0_u32; MAX_SLICES as usize + 1];
+        assert!(!valid_positions(&too_many, 100), "over the slice limit");
     }
 }

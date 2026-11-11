@@ -55,12 +55,16 @@ unsafe fn original<T: Copy>(index: usize) -> Option<T> {
 }
 
 /// Install every site and return whether any of them took.
-pub fn install(base: usize) -> bool {
+///
+/// # Safety
+/// `base` must be the verified firmware image. Run once before app threads start.
+pub unsafe fn install(base: usize) -> bool {
     let mut installed = 0;
     for (index, site) in table().iter().enumerate() {
         // SAFETY: every offset is from the tested image and every handler has
-        // the site's signature.
-        let trampoline = unsafe { hook::install(base, site.offset, site.handler as usize) };
+        // the site's signature.  This only prepares the trampoline; the site
+        // stays untouched until `hook::commit`.
+        let trampoline = unsafe { hook::prepare(base, site.offset, site.handler as usize) };
         // SAFETY: only the loader writes the table, before the app threads run.
         unsafe {
             core::ptr::addr_of_mut!(ORIGINALS)
@@ -70,6 +74,21 @@ pub fn install(base: usize) -> bool {
         }
         installed += usize::from(trampoline.is_some());
     }
+    if installed == 0 {
+        hook::abort();
+        return false;
+    }
+    // Seal the code pages first, then publish every branch.  A failure here
+    // restores any site already patched and leaves the app unmodified.
+    let committed = hook::commit();
+    if !committed && !hook::touched() {
+        // SAFETY: no branch is live, so the trampoline table is not observable.
+        unsafe { core::ptr::addr_of_mut!(ORIGINALS).write([0; 17]) };
+        return false;
+    }
+    // A rollback failure can leave a branch live even though installation
+    // reports failure.  Its handler still forwards through ORIGINALS, so finish
+    // the bookkeeping and let the loader refuse the mod; the app keeps working.
     // SAFETY: the site table has this entry.
     if unsafe { original::<usize>(3) }.is_some() {
         NOTE_ON_OK.store(true, Ordering::Release);
@@ -87,8 +106,7 @@ pub fn install(base: usize) -> bool {
         control::record(original::<usize>(15).unwrap_or(0));
     }
     install_paint(base);
-    hook::seal();
-    installed > 0
+    committed
 }
 
 /// The site table, in install order.
@@ -474,17 +492,25 @@ unsafe extern "C" fn writer_entry(closure: usize, block: *mut u8) {
 unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: usize) {
     // SAFETY: the original is the app's own setter, when the site is installed.
     let pitch_off = unsafe { original::<midi::PitchOffset>(7) };
-    // SAFETY: the app promises the event is readable for one.
-    let mut message = unsafe { NoteEvent::new(app, context, event, source as u64, pitch_off) };
+    // The event is the app's writable object for the duration of this hook.
+    let storage: &mut [u8] = if event.is_null() {
+        &mut []
+    } else {
+        // SAFETY: the app promises exclusive writability for one event.
+        unsafe { core::slice::from_raw_parts_mut(event, midi::EVENT_BYTES) }
+    };
+    // SAFETY: the site supplies the app's own displaced pitch setter.
+    let mut message = unsafe { NoteEvent::new(app, context, storage, source as u64, pitch_off) };
     let flow = with_mod(|module| module.on_note(&mut message)).unwrap_or(NoteFlow::Forward);
     match flow {
         NoteFlow::Forward => {
+            message.restore();
             // SAFETY: the original is the app's own dispatcher.
             unsafe {
                 if let Some(forward) =
                     original::<unsafe extern "C" fn(usize, usize, usize, usize)>(14)
                 {
-                    forward(app, context, event as usize, source);
+                    forward(app, context, message.pointer() as usize, source);
                 }
             }
         }
@@ -497,7 +523,7 @@ unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: us
                     forward(
                         app,
                         message.forward_context(),
-                        event as usize,
+                        message.pointer() as usize,
                         usize::try_from(message.forward_source()).unwrap_or(usize::MAX),
                     );
                 }
@@ -544,11 +570,13 @@ unsafe extern "C" fn page_paint(component: usize, graphics: usize) {
     if sample_page {
         page::set_screen(component);
     }
+    // SAFETY: the app is painting this live component on the UI thread.
+    let chop_mode = sample_page && unsafe { page::chop_mode(component) };
     let event = PaintEvent {
         component,
         graphics,
         sample_page,
-        chop_mode: sample_page && page::chop_mode(component),
+        chop_mode,
     };
     let mut handle = Graphics::new(graphics);
     with_mod(|module| module.on_paint(&mut handle, event));
@@ -601,12 +629,17 @@ pub fn repaint_function() -> Option<Repaint> {
 }
 
 /// Ask the app to repaint one component.
-pub fn repaint_component(component: usize) {
+///
+/// # Safety
+///
+/// `component` must be a live component on its owning UI thread.
+pub unsafe fn repaint_component(component: usize) {
     // SAFETY: the original is the app's own repaint.
     if let Some(forward) = unsafe { original::<Repaint>(9) }
         && component != 0
     {
-        // SAFETY: the app's own call.
+        // SAFETY: the caller guarantees the live component and the app's own
+        // repaint is the displaced entry.
         unsafe { forward(component, 0, (2000_u64 << 32) | 0x7d0) };
     }
 }
@@ -621,8 +654,14 @@ pub fn buttons_original() -> Option<unsafe extern "C" fn(usize)> {
 /// Replay one key press/release on a captured button event.
 ///
 /// Returns false when no event was captured or the button hook is missing.
+///
+/// # Safety
+///
+/// `event` must be the first 16 bytes of a button event captured during the
+/// current callback, whose context and surface are still live.  Replaying it
+/// later would dereference a stale app object.
 #[must_use]
-pub fn replay_button(event: &[u8; 16], key: u8) -> bool {
+pub unsafe fn replay_button(event: &[u8; 16], key: u8) -> bool {
     let Some(original) = buttons_original() else {
         return false;
     };
@@ -647,10 +686,20 @@ pub fn replay_button(event: &[u8; 16], key: u8) -> bool {
 /// Returns false when the note hook is not installed.
 ///
 /// This bypasses the mod's pad policy and is intended for a controlled internal
-/// selection, followed by [`send_note_off`]; the caller supplies the app's live
-/// input object and source id.
+/// selection, followed by [`send_note_off`].
+///
+/// # Safety
+///
+/// `input` and `properties` must be the app's live input objects on their owning
+/// UI thread, and `source`/`pad`/`velocity` must be valid for the firmware.
 #[must_use]
-pub fn send_note_on(input: usize, source: i32, pad: i32, properties: usize, velocity: f32) -> bool {
+pub unsafe fn send_note_on(
+    input: usize,
+    source: i32,
+    pad: i32,
+    properties: usize,
+    velocity: f32,
+) -> bool {
     // SAFETY: the original is the app's own note-on handler.
     if let Some(forward) =
         // SAFETY: the pointer is the app's displaced note-on entry.
@@ -665,7 +714,12 @@ pub fn send_note_on(input: usize, source: i32, pad: i32, properties: usize, velo
 }
 
 /// Send a note-off through the app's own input path.
-pub fn send_note_off(input: usize, source: i32, pad: i32) {
+///
+/// # Safety
+///
+/// `input` must be the app's live input object on its owning UI thread, and
+/// `source`/`pad` must identify the note-on this releases.
+pub unsafe fn send_note_off(input: usize, source: i32, pad: i32) {
     // SAFETY: the original is the app's own handler.
     if let Some(forward) = unsafe { original::<unsafe extern "C" fn(usize, i32, i32)>(5) } {
         // SAFETY: the app's own call.

@@ -1,8 +1,8 @@
 # Using the MPC Sample SDK
 
 `mpc-sample-sdk` is a **Rust SDK**: a mod is a Rust `cdylib`, the events and app
-objects are typed Rust values, and the SDK isolates the firmware `unsafe` so the
-mod itself is safe Rust. The build tool is Cargo-based (`build-mod.sh`); no C or
+objects are typed Rust values. Raw firmware operations carry explicit unsafe
+contracts for lifetimes, thread ownership, and exclusive access. The build tool is Cargo-based (`build-mod.sh`); no C or
 C++ is compiled.
 
 This folder is a hands-on cookbook. Each page is short, explains one part of the
@@ -33,6 +33,7 @@ Start here if you have never built a mod:
 21. [Firmware effects](21-effects.md)
 22. [Build and install a mod](22-build-and-install.md)
 23. [Autonomous development and emulator testing](23-autonomous-development.md)
+24. [Safety migration after v0.1.10](24-safety-migration.md)
 
 Every page has a runnable-shaped example. The examples assume:
 
@@ -42,6 +43,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.1.10" }
+# The unreleased safety revision is API-breaking; see 24-safety-migration.md.
 ```
 
 A mod is installed by `export_mod!`, built as a `cdylib`, and loaded with
@@ -64,6 +66,6 @@ mpc_sample_sdk::export_mod!(MyMod);
 
 ## The one rule
 
-The SDK owns the firmware, hooks, raw pointers and the unsafe code. A feature
-crate should contain **safe Rust only**. The examples never use `unsafe`; the
-few low-level entry points are marked where they belong in the advanced section.
+Keep feature logic in safe Rust. At firmware boundaries, establish each API’s
+safety requirements before entering a small documented unsafe block. See the
+[safety migration guide](24-safety-migration.md) for changes after v0.1.10.

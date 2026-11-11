@@ -55,26 +55,41 @@ pub struct Edges {
 /// `MINIMOD_TRIM_DB` when it is set").
 #[must_use]
 pub fn edges(path: &Path, layout: Layout, frames: u32, ratio: f64) -> Option<Edges> {
-    let channels = usize::from(layout.channels.max(1));
-    let mut layout = layout;
-    layout.channels = u16::try_from(channels).unwrap_or(1);
-    if !(2..=4).contains(&layout.width) {
-        layout.width = 2;
-    }
-    let frame_bytes = layout.frame_bytes();
-    if frame_bytes == 0 {
+    if frames == 0
+        || !(1..=2).contains(&layout.channels)
+        || !matches!(
+            (layout.encoding, layout.width),
+            (Encoding::Pcm, 2..=4) | (Encoding::Float, 4 | 8)
+        )
+    {
         return None;
     }
+    let frame_bytes = layout.frame_bytes();
     let file = File::open(path).ok()?;
-    let threshold = threshold(&file, &layout, frames, frame_bytes, ratio);
+    let end = layout
+        .data_offset
+        .checked_add(u64::from(frames) * frame_bytes as u64)?;
+    if end > file.metadata().ok()?.len() {
+        return None;
+    }
+    let threshold = threshold(&file, &layout, frames, frame_bytes, ratio)?;
     let first = first_loud(&file, &layout, frames, frame_bytes, threshold)?;
-    let last = last_loud(&file, &layout, frames, frame_bytes, threshold, first);
+    let last = last_loud(&file, &layout, frames, frame_bytes, threshold, first)?;
     Some(Edges { first, last })
 }
 
 /// The amplitude a frame must exceed to count as audible.
-fn threshold(file: &File, layout: &Layout, frames: u32, frame_bytes: usize, ratio: f64) -> i32 {
-    threshold_for(peak(file, layout, frames, frame_bytes), ratio)
+fn threshold(
+    file: &File,
+    layout: &Layout,
+    frames: u32,
+    frame_bytes: usize,
+    ratio: f64,
+) -> Option<i32> {
+    Some(threshold_for(
+        peak(file, layout, frames, frame_bytes)?,
+        ratio,
+    ))
 }
 
 /// The threshold for a file whose loudest sample is `peak`, in the trim scale.
@@ -85,6 +100,7 @@ fn threshold_for(peak: i32, ratio: f64) -> i32 {
         let db = std::env::var("MINIMOD_TRIM_DB")
             .ok()
             .and_then(|text| text.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite())
             .unwrap_or(DEFAULT_DB)
             .clamp(-90.0, -6.0);
         10.0_f64.powf(db / 20.0)
@@ -115,7 +131,9 @@ fn scaled_float(value: f32) -> i32 {
 /// already chosen `ratio`.  `None` when the audio is silent.
 #[must_use]
 pub fn memory_edges(samples: &[f32], channels: usize, ratio: f64) -> Option<Edges> {
-    let channels = channels.max(1);
+    if channels == 0 || !samples.len().is_multiple_of(channels) {
+        return None;
+    }
     let loud_at = |frame: usize, threshold: i32| {
         samples[frame * channels..][..channels]
             .iter()
@@ -143,15 +161,19 @@ pub fn memory_edges(samples: &[f32], channels: usize, ratio: f64) -> Option<Edge
 }
 
 /// The loudest sample in the file, in the trim scale.
-fn peak(file: &File, layout: &Layout, frames: u32, frame_bytes: usize) -> i32 {
+fn peak(file: &File, layout: &Layout, frames: u32, frame_bytes: usize) -> Option<i32> {
     let mut buffer = [0_u8; BLOCK_BYTES];
     let per_block = BLOCK_BYTES / frame_bytes;
     let mut peak = 0;
     let mut at = 0_u32;
     while at < frames {
-        let Some(read) = read_frames(file, layout, at, per_block, &mut buffer) else {
-            break;
-        };
+        let read = read_frames(
+            file,
+            layout,
+            at,
+            per_block.min((frames - at) as usize),
+            &mut buffer,
+        )?;
         for frame in 0..read {
             for channel in 0..usize::from(layout.channels) {
                 let offset =
@@ -170,7 +192,7 @@ fn peak(file: &File, layout: &Layout, frames: u32, frame_bytes: usize) -> i32 {
             break;
         }
     }
-    peak
+    Some(peak)
 }
 
 /// The first frame that is louder than `threshold`.
@@ -185,7 +207,13 @@ fn first_loud(
     let per_block = BLOCK_BYTES / frame_bytes;
     let mut at = 0_u32;
     while at < frames {
-        let read = read_frames(file, layout, at, per_block, &mut buffer)?;
+        let read = read_frames(
+            file,
+            layout,
+            at,
+            per_block.min((frames - at) as usize),
+            &mut buffer,
+        )?;
         for frame in 0..read {
             if loud(layout, &buffer, frame, threshold) {
                 return Some(at + u32::try_from(frame).unwrap_or(0));
@@ -207,7 +235,7 @@ fn last_loud(
     frame_bytes: usize,
     threshold: i32,
     first: u32,
-) -> u32 {
+) -> Option<u32> {
     let mut buffer = [0_u8; BLOCK_BYTES];
     let per_block = BLOCK_BYTES / frame_bytes;
     let last = first;
@@ -219,17 +247,15 @@ fn last_loud(
             &mut buffer[..count * frame_bytes],
             layout.data_offset + u64::from(start) * u64::try_from(frame_bytes).unwrap_or(0),
         );
-        if written.is_err() {
-            break;
-        }
+        written.ok()?;
         for frame in (0..count).rev() {
             if loud(layout, &buffer, frame, threshold) {
-                return start + u32::try_from(frame).unwrap_or(0);
+                return Some(start + u32::try_from(frame).unwrap_or(0));
             }
         }
         end = start;
     }
-    last
+    Some(last)
 }
 
 /// Read up to `frames` interleaved frames at `at`.
@@ -243,8 +269,8 @@ fn read_frames(
     let frame_bytes = layout.frame_bytes();
     let want = frames * frame_bytes;
     let offset = layout.data_offset + u64::from(at) * u64::try_from(frame_bytes).ok()?;
-    let read = file.read_at(&mut buffer[..want], offset).ok()?;
-    Some(read / frame_bytes)
+    file.read_exact_at(&mut buffer[..want], offset).ok()?;
+    Some(frames)
 }
 
 /// Whether any channel of `frame` is louder than `threshold`.
@@ -357,6 +383,55 @@ mod tests {
             width: info.width,
             encoding: info.encoding,
         }
+    }
+
+    #[test]
+    fn ignores_audio_beyond_requested_frames() {
+        let (path, layout) = padded("range-limit", 1000, 100, 800);
+        assert_eq!(edges(&path, layout, 50, 0.03), None);
+        assert_eq!(
+            edges(&path, layout, 150, 0.03),
+            Some(Edges {
+                first: 100,
+                last: 149
+            })
+        );
+        assert_eq!(edges(&path, layout, 1001, 0.03), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn float64_audio_and_invalid_layouts() {
+        let (path, _) = padded("float64", 4, 0, 0);
+        let data: Vec<u8> = [0.0_f64, 0.5, -0.5, 0.0]
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        std::fs::write(&path, data).unwrap();
+        let layout = Layout {
+            data_offset: 0,
+            channels: 1,
+            width: 8,
+            encoding: crate::platform::wav::Encoding::Float,
+        };
+        assert_eq!(
+            edges(&path, layout, 4, 0.03),
+            Some(Edges { first: 1, last: 2 })
+        );
+        assert_eq!(
+            edges(
+                &path,
+                Layout {
+                    channels: 0,
+                    ..layout
+                },
+                4,
+                0.03
+            ),
+            None
+        );
+        assert_eq!(edges(&path, Layout { width: 3, ..layout }, 4, 0.03), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

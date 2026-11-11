@@ -355,7 +355,11 @@ pub fn render_code(
         .map(|rendered| rendered.audio)
 }
 
-/// Render through a specific image, for tests and advanced callers.
+/// Render through a specific image handle, for advanced callers.
+///
+/// A [`Firmware`] value is only constructible from [`Firmware::find`] or from an
+/// unsafe, verified-base call, so this safe function never calls through an
+/// unauthenticated address.
 ///
 /// # Errors
 ///
@@ -465,7 +469,9 @@ mod tests {
 
     #[test]
     fn invalid_buffers_are_refused_before_any_firmware_call() {
-        let firmware = Firmware::from_base(0);
+        // SAFETY: zero is deliberately not an image; every call below must be
+        // refused before reaching firmware.
+        let firmware = unsafe { Firmware::from_base(0) };
         assert_eq!(
             render_at(firmware, Effect::Reverb, &[], 2, 44_100, &[]).unwrap_err(),
             EffectError::Empty
