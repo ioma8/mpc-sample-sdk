@@ -105,6 +105,11 @@ The calibration trim is available as `audio::extra_latency()` and
 `audio::set_extra_latency(frames)`. This is a UI-side setting; do not change it
 from the audio callback.
 
+The exported two-second output tap and `OutputInfo::output_peak_bits` are only
+updated for a validated S32 stream with a plausible channel count and
+`written <= requested`. An S16 (or otherwise formatted) stream is forwarded and
+ignored rather than being read as S32.
+
 ## Buffer helpers
 
 - `audio::output_buffer()` / `audio::input_buffer()` — ring sizes in frames.

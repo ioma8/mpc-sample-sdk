@@ -33,6 +33,10 @@ if let Some(samples) = audio {
 }
 ```
 
+The reader accepts PCM 16/24/32-bit and IEEE float 32/64; other widths or
+encodings return `None`. Reads are capped to the requested frame count, so extra
+RIFF chunks or trailing audio cannot change the result.
+
 Pass the geometry you expect. `read_f32` returns `None` when the header, length
 or format does not match; it does not guess.
 

@@ -87,4 +87,7 @@ if let Some(edges) = trim::edges(path, layout, info.frames, 0.0) {
 ```
 
 `ratio = 0.0` means the default threshold (3 % of peak, floored near -51 dBFS).
+`edges` accepts PCM 16/24/32-bit and IEEE float 32/64; every read is capped to
+the requested frame count, so trailing audio or RIFF chunks cannot affect the
+edges. Other widths and encodings are rejected.
 For audio already in memory, use `trim::memory_edges(&audio, channels, ratio)`.

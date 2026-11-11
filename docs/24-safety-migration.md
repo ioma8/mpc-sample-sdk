@@ -1,8 +1,8 @@
-# Safety migration after v0.1.10
+# Migrating to v0.2.0
 
-This revision corrects firmware-boundary defects found in the post-release
-review. It is **API-breaking**: raw firmware operations now demand an explicit
-`safety` contract, and several unchanged-looking calls move behind one. Existing
+v0.2.0 corrects firmware-boundary defects found in the post-release review. It
+is **API-breaking**: raw firmware operations now demand an explicit `safety`
+contract, and several unchanged-looking calls move behind one. Existing
 `v0.1.10` consumers stay pinned to that release until they audit the call sites
 below.
 
@@ -19,7 +19,8 @@ no `unsafe`; only the firmware boundary does.
 | `Firmware::from_base` | now `unsafe` | a number is not an authenticated firmware image; use `Firmware::find` |
 | `pads::free_count`, `pads::free_estimate`, `pads::has_room` | now `unsafe` | each calls the app's own predicate with a caller-supplied program |
 | `selection::current` | now `unsafe` | calls the page predicate with a caller-supplied screen |
-| `Selection` fields | private; use `screen()`, `state()`, `sample()`, `frames()`, `channels()`, `rate()` | only `current` can construct a validated selection |
+| `Selection` fields | private; use `screen()`, `state()`, `sample()`, `frames()`, `channels()`, `rate()` | only `current` or the unsafe `from_parts` can construct a validated selection |
+| `Selection::from_parts` | new `unsafe` constructor | explicit synthetic source for synth actions that have no selected sample |
 | `pads::set_layer_active` | now `unsafe` | writes a live native layer and requires exclusive access |
 | `slice::write_markers`, `slice::set_manual` | now `unsafe` | drive the app's native Reset/Insert and binding callbacks |
 | `sites::repaint_component`, `sites::replay_button`, `sites::send_note_on`, `sites::send_note_off` | now `unsafe` | take a component, event or input object that must still be live |
@@ -29,7 +30,9 @@ no `unsafe`; only the firmware boundary does.
 | `page::set_screen` / `draw::set_screen` | removed from the public API | a mod could point the repaint at an arbitrary component |
 | `NoteEvent` | now `NoteEvent<'_>`; `event` is private | the event is borrowed, exclusively, for the callback |
 | `Mod` | now requires `Send` | the SDK stores one module behind an exclusive dispatch slot |
-| `paths::for_sample` | no longer scans temporary projects | a geometry match does not prove recording identity; use `for_recording` |
+| `loader::with_mod` / `with_mod_audio` | split UI and audio dispatch | UI waits only for audio; audio never waits; UI never waits for UI; reentry forwards |
+| `paths::for_sample` | no longer scans temporary projects | a geometry match does not prove recording identity |
+| `paths::for_recording` | new explicit recording context | searches only the recording's own project directory |
 | `hook::install` / `hook::seal` | renamed to `hook::prepare` / `hook::commit` | installation is prepare → seal → publish, with rollback |
 
 `extract::run`, `control::apply`, `control::set`, `page::visible`,
@@ -94,11 +97,16 @@ unless the integer came from the same callback's app object.
 ## Extract and substituted audio
 
 The substitution plan is bound to the operation that armed it, the thread that
-runs that operation and the first writer closure on that thread. An unrelated
-save cannot read, advance or clear it. `extract::run` keeps the rendered buffer
-alive until the writer reports every frame and no callback remains in flight; a
-timeout reports `NotApplied` and keeps the operation published rather than
-freeing audio the executor may still use.
+runs that operation and the first writer closure on that thread. Another thread
+cannot read, advance or clear it, and another writer closure is forwarded. The
+native writer hook does not expose the owning command, so an unrelated writer
+callback on the same executor thread *before* the command's own first callback
+cannot be distinguished; the plan is armed immediately before execute to keep
+that window as small as the firmware allows.
+
+`extract::run` keeps the rendered buffer alive until the writer reports every
+frame and no callback remains in flight; a timeout reports `NotApplied` and keeps
+the operation published rather than freeing audio the executor may still use.
 
 ## Hook installation
 

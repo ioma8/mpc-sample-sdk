@@ -90,13 +90,15 @@ writer's blocks.
 ## Image and hook internals
 
 `image` exposes `base`, `read`, `write`, `read_u32`, `read_u64` and
-`read_pointer`. They are safe bounds-checked reads/writes, but the offsets are
-firmware-specific. `hook` is the patch engine; a mod should never need it
-directly.
+`read_pointer`. The reads are safe bounds-checked queries, but the offsets are
+firmware-specific. `image::write` is `unsafe`: the caller must establish
+exclusive access and preserve the target object's invariants. `hook` is the
+patch engine; a mod should never need it directly, and installation is the
+SDK's `prepare -> seal -> commit` sequence.
 
 ## `with_mod`
 
-`loader::with_mod` runs a closure with the installed mod:
+`loader::with_mod` runs a closure with the installed mod from the UI side:
 
 ```rust
 let installed = mpc_sample_sdk::loader::with_mod(|module| {
@@ -105,4 +107,9 @@ let installed = mpc_sample_sdk::loader::with_mod(|module| {
 }).is_some();
 ```
 
-This is mainly for SDK diagnostics and tests. From a mod callback, use `self`.
+It waits for an in-flight audio callback, but never waits for another UI
+callback: if another UI closure owns the slot, it returns `None` so the hook can
+forward. `loader::with_mod_audio` is the audio-thread variant: it returns `None`
+instead of blocking. Both are mainly for SDK diagnostics and tests; from a mod
+callback, use `self`. See the [v0.2.0 migration guide](24-safety-migration.md)
+for the full dispatch policy.

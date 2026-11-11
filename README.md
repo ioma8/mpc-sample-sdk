@@ -150,6 +150,6 @@ MIT. See [LICENSE](LICENSE).
 ## v0.2.0 safety migration
 
 `v0.2.0` contains API-breaking safety corrections. Existing `v0.1.10` consumers
-remain pinned to that release. Before adopting this revision, follow
+remain pinned to that release. Before adopting v0.2.0, follow
 [the migration guide](docs/24-safety-migration.md); do not add blanket unsafe
 blocks around feature code.

@@ -49,6 +49,11 @@ match unsafe { extract::run(&request) } {
 app should copy. The buffer may be longer than the range for an effect tail; the
 SDK's writer substitutes it block by block.
 
+The SDK copies the rendered buffer into an owned `Arc` and keeps it alive until
+the app's writer reports every frame and the callback counter is idle. A timeout
+returns `NotApplied` without freeing audio that an in-flight callback may still
+be reading; the operation stays published until its executor reports completion.
+
 `destination` controls where the new sample lands:
 
 - `None`: the app uses its next free pad (normal Extract behavior).

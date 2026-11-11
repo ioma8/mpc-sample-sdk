@@ -33,7 +33,7 @@ Start here if you have never built a mod:
 21. [Firmware effects](21-effects.md)
 22. [Build and install a mod](22-build-and-install.md)
 23. [Autonomous development and emulator testing](23-autonomous-development.md)
-24. [Safety migration after v0.1.10](24-safety-migration.md)
+24. [Migrating to v0.2.0](24-safety-migration.md)
 
 Every page has a runnable-shaped example. The examples assume:
 
@@ -43,7 +43,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", tag = "v0.2.0" }
-# The unreleased safety revision is API-breaking; see 24-safety-migration.md.
+# v0.2.0 is API-breaking; see 24-safety-migration.md.
 ```
 
 A mod is installed by `export_mod!`, built as a `cdylib`, and loaded with
@@ -68,4 +68,4 @@ mpc_sample_sdk::export_mod!(MyMod);
 
 Keep feature logic in safe Rust. At firmware boundaries, establish each API’s
 safety requirements before entering a small documented unsafe block. See the
-[safety migration guide](24-safety-migration.md) for changes after v0.1.10.
+[v0.2.0 migration guide](24-safety-migration.md) for changes from v0.1.10.
