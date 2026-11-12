@@ -34,6 +34,7 @@ Start here if you have never built a mod:
 22. [Build and install a mod](22-build-and-install.md)
 23. [Autonomous development and emulator testing](23-autonomous-development.md)
 24. [Migrating to v0.2.0](24-safety-migration.md)
+25. [Pad lighting](25-lighting.md)
 
 Every page has a runnable-shaped example. The examples assume:
 
