@@ -112,6 +112,55 @@ fn layer_for_pad(surface: usize, pad: i32) -> Option<usize> {
     image::read_pointer(state.checked_add(STATE_LAYERS)?)
 }
 
+/// The pad whose state is `state`, read through the surface's own tables.
+///
+/// The page's selected instrument state is the same object as one entry in the
+/// surface's pad table, so this resolves the selected pad without relying on a
+/// recent pad press.
+#[must_use]
+pub fn pad_for_state(surface: usize, state: usize) -> Option<i32> {
+    if surface == 0 || state == 0 {
+        return None;
+    }
+    let array = image::read_pointer(surface.checked_add(SURFACE_PADS)?)?;
+    let end = image::read_pointer(surface.checked_add(SURFACE_PADS_END)?)?;
+    if array == 0 || end < array {
+        return None;
+    }
+    let count = ((end - array) / 8).min(MAX_PADS);
+    for index in 0..count {
+        if image::read_pointer(array.checked_add(index.checked_mul(8)?)?) == Some(state) {
+            return i32::try_from(index).ok();
+        }
+    }
+    None
+}
+
+/// The first pad whose sample is `sample`.
+///
+/// This is the fallback when the selected state is not in the surface table
+/// (for example a temporary page state); the sample identity is unique enough
+/// for the trim target.
+#[must_use]
+pub fn pad_for_sample(surface: usize, sample: usize) -> Option<i32> {
+    if surface == 0 || sample == 0 {
+        return None;
+    }
+    let array = image::read_pointer(surface.checked_add(SURFACE_PADS)?)?;
+    let end = image::read_pointer(surface.checked_add(SURFACE_PADS_END)?)?;
+    if array == 0 || end < array {
+        return None;
+    }
+    let count = ((end - array) / 8).min(MAX_PADS);
+    for index in 0..count {
+        let pad = i32::try_from(index).ok()?;
+        if sample_for_pad(surface, pad) == Some(sample) {
+            return Some(pad);
+        }
+    }
+    None
+}
+
 /// The sample a pad holds, read through the surface's own tables.
 #[must_use]
 pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
