@@ -156,14 +156,19 @@ own colours:
 use mpc_sample_sdk::platform::lighting;
 
 // Pad indices are zero-based (0 is pad 1).
-lighting::set_pad_rgb(0, 0x00ff_0000); // red
-lighting::clear_pad_rgb(0);            // back to the app's colour
+lighting::send_pad_light(0, 0x00ff_0000, 0.25); // dim red, sent now
+lighting::set_pad_light(1, 0x009b_30ff, 1.0);    // stored, applied on refresh
+lighting::restore_pad_rgb(0);                    // back to the app's colour
 ```
 
-`set_pad_rgb` takes `0xRRGGBB`; the native AC50 protocol keeps 7 bits per
-channel. The app refreshes lighting continuously, and the hook reapplies an
-override on every refresh. `lighting::sender()` returns the native sender
-object after the first callback, and `clear_pad_rgbs()` clears all overrides.
+`set_pad_rgb` is the full-brightness shortcut; `set_pad_light` adds a
+`0.0..=1.0` brightness. `send_pad_light` stores the override and sends it
+immediately once the native sender is known. `restore_pad_rgb` /
+`restore_pad_rgbs` clear overrides and re-send the app's last native light, so
+leaving a custom screen restores the stock colours without waiting for a
+refresh.
 
-Overrides are per pad and persist until cleared; the app's selection, playback,
-mute and 16 Levels colours continue to drive every pad without an override.
+The native AC50 protocol keeps 7 bits per channel. The SDK remembers the app's
+native light for every pad and re-applies an override on every native refresh;
+pads without an override keep the app's selection, playback, mute and 16 Levels
+colours.

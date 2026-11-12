@@ -196,23 +196,37 @@ fn table() -> [Site; 18] {
 ///
 /// The app calls this with its own sender, `PadLight` and pad index.
 unsafe extern "C" fn lighting(sender: usize, light: *mut u64, pad: u8) {
-    if !light.is_null() {
+    let native = if light.is_null() {
+        0
+    } else {
         // SAFETY: the app passes its live PadLight for this callback.
-        let value = unsafe { *light };
-        let rgb = value as u32;
-        let chosen = crate::platform::lighting::observed(sender, pad, rgb);
-        if chosen != rgb {
-            // Full brightness keeps a 7-bit channel from being dimmed away.
-            let lit = (u64::from(1.0_f32.to_bits()) << 32) | u64::from(chosen);
-            // SAFETY: the callback owns this temporary PadLight.
-            unsafe { *light = lit };
-        }
+        unsafe { *light }
+    };
+    crate::platform::lighting::observe(sender, pad, native);
+    if !light.is_null()
+        && let Some(lit) = crate::platform::lighting::override_light(pad)
+    {
+        // SAFETY: the callback owns this temporary PadLight.
+        unsafe { *light = lit };
     }
     // SAFETY: site 17 is the app's lighting callback; forward its arguments.
     if let Some(forward) = unsafe { original::<unsafe extern "C" fn(usize, *mut u64, u8)>(17) } {
         // SAFETY: forwards the app's callback arguments unchanged.
         unsafe { forward(sender, light, pad) };
     }
+}
+
+/// Send one already-packed `PadLight` through the original callback.
+pub(crate) fn send_light(sender: usize, light: u64, pad: u8) -> bool {
+    // SAFETY: site 17 is the installed lighting callback.
+    let Some(forward) = (unsafe { original::<unsafe extern "C" fn(usize, *mut u64, u8)>(17) })
+    else {
+        return false;
+    };
+    let mut light = light;
+    // SAFETY: the original callback converts and sends this live `PadLight`.
+    unsafe { forward(sender, core::ptr::from_mut(&mut light), pad) };
+    true
 }
 
 unsafe extern "C" fn sample_service_ctor(
