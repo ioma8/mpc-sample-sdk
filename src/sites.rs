@@ -35,7 +35,7 @@ pub fn notes_ready() -> bool {
 }
 
 /// The displaced function of every site, zero when it was not installed.
-static mut ORIGINALS: [usize; 17] = [0; 17];
+static mut ORIGINALS: [usize; 18] = [0; 18];
 
 /// The displaced function for one site.
 ///
@@ -43,7 +43,7 @@ static mut ORIGINALS: [usize; 17] = [0; 17];
 ///
 /// `T` must be the exact signature of the hooked function.
 unsafe fn original<T: Copy>(index: usize) -> Option<T> {
-    // SAFETY: the table has 17 entries and `index` is a site number.
+    // SAFETY: the table has 18 entries and `index` is a site number.
     let address = unsafe {
         core::ptr::addr_of!(ORIGINALS)
             .cast::<usize>()
@@ -83,7 +83,7 @@ pub unsafe fn install(base: usize) -> bool {
     let committed = hook::commit();
     if !committed && !hook::touched() {
         // SAFETY: no branch is live, so the trampoline table is not observable.
-        unsafe { core::ptr::addr_of_mut!(ORIGINALS).write([0; 17]) };
+        unsafe { core::ptr::addr_of_mut!(ORIGINALS).write([0; 18]) };
         return false;
     }
     // A rollback failure can leave a branch live even though installation
@@ -110,7 +110,7 @@ pub unsafe fn install(base: usize) -> bool {
 }
 
 /// The site table, in install order.
-fn table() -> [Site; 17] {
+fn table() -> [Site; 18] {
     [
         Site {
             offset: 0x0154_5a50,
@@ -180,7 +180,39 @@ fn table() -> [Site; 17] {
             offset: 0x01df_3330,
             handler: sample_service_ctor as *const (),
         },
+        Site {
+            offset: 0x0159_f910,
+            handler: lighting as *const (),
+        },
     ]
+}
+
+/// The AC50 per-pad lighting callback: apply the mod's override, then forward.
+///
+/// The callback receives the sender, a pointer to the native `PadLight`
+/// (`RGB | brightness_float << 32`) and the zero-based pad.
+///
+/// # Safety
+///
+/// The app calls this with its own sender, `PadLight` and pad index.
+unsafe extern "C" fn lighting(sender: usize, light: *mut u64, pad: u8) {
+    if !light.is_null() {
+        // SAFETY: the app passes its live PadLight for this callback.
+        let value = unsafe { *light };
+        let rgb = value as u32;
+        let chosen = crate::platform::lighting::observed(sender, pad, rgb);
+        if chosen != rgb {
+            // Full brightness keeps a 7-bit channel from being dimmed away.
+            let lit = (u64::from(1.0_f32.to_bits()) << 32) | u64::from(chosen);
+            // SAFETY: the callback owns this temporary PadLight.
+            unsafe { *light = lit };
+        }
+    }
+    // SAFETY: site 17 is the app's lighting callback; forward its arguments.
+    if let Some(forward) = unsafe { original::<unsafe extern "C" fn(usize, *mut u64, u8)>(17) } {
+        // SAFETY: forwards the app's callback arguments unchanged.
+        unsafe { forward(sender, light, pad) };
+    }
 }
 
 unsafe extern "C" fn sample_service_ctor(
@@ -733,7 +765,7 @@ mod tests {
 
     #[test]
     fn the_table_has_one_entry_per_site() {
-        assert_eq!(table().len(), 17);
+        assert_eq!(table().len(), 18);
         assert!(!notes_ready());
     }
 }

@@ -144,3 +144,26 @@ ignored rather than being read as S32.
 - `audio::mark_buffers_stale()` / `audio::buffers_stale()` — geometry cache.
 - `audio::stream_geometry(...)` — unsafe low-level ALSA geometry; most mods
   should use `OutputInfo` instead.
+
+
+## Pad lighting
+
+The AC50 pad LEDs are driven by a native per-pad callback. The SDK hooks that
+callback and lets a mod replace individual pads without disturbing the app's
+own colours:
+
+```rust
+use mpc_sample_sdk::platform::lighting;
+
+// Pad indices are zero-based (0 is pad 1).
+lighting::set_pad_rgb(0, 0x00ff_0000); // red
+lighting::clear_pad_rgb(0);            // back to the app's colour
+```
+
+`set_pad_rgb` takes `0xRRGGBB`; the native AC50 protocol keeps 7 bits per
+channel. The app refreshes lighting continuously, and the hook reapplies an
+override on every refresh. `lighting::sender()` returns the native sender
+object after the first callback, and `clear_pad_rgbs()` clears all overrides.
+
+Overrides are per pad and persist until cleared; the app's selection, playback,
+mute and 16 Levels colours continue to drive every pad without an override.
