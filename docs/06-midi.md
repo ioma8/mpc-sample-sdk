@@ -29,46 +29,46 @@ use; call `replay_as_pad` when you want the app to hear a different pad.
 ## Example: transpose external notes into pad 5
 
 ```rust
-use mpc_sample_sdk::{Mod, NoteEvent, NoteFlow};
+use mpc_sample_sdk::{Mod, NoteEvent, Flow};
 
 #[derive(Default)]
 struct Midi;
 
 impl Mod for Midi {
-    fn on_note(&mut self, event: &mut NoteEvent<'_>) -> NoteFlow {
+    fn on_note(&mut self, event: &mut NoteEvent<'_>) -> Flow {
         if !event.note_on || !event.external {
-            return NoteFlow::Forward;
+            return Flow::Forward;
         }
         let row = event.row;
         let context = event.context;
-        if event.replay_as_pad(4, row, context) {
-            NoteFlow::Replayed
-        } else {
-            NoteFlow::Forward
-        }
+        // A replayed event is forwarded as the rewritten pad; the SDK
+        // restores the app's bytes after the forward.
+        event.replay_as_pad(4, row, context);
+        Flow::Forward
     }
 }
 
 mpc_sample_sdk::export_mod!(Midi);
 ```
 
-`Replayed` tells the SDK to forward the rewritten event and then restore it.
-`Forward` sends the original event. `Consume` swallows it.
+After `replay_as_pad` succeeds, `Forward` makes the SDK forward the rewritten
+event and then restore it; without a replay, `Forward` sends the original event.
+`Consume` swallows it.
 
 ## Example: only notes in a range
 
 ```rust
-use mpc_sample_sdk::{Mod, NoteEvent, NoteFlow};
+use mpc_sample_sdk::{Mod, NoteEvent, Flow};
 
 #[derive(Default)]
 struct LowNotes;
 
 impl Mod for LowNotes {
-    fn on_note(&mut self, event: &mut NoteEvent<'_>) -> NoteFlow {
+    fn on_note(&mut self, event: &mut NoteEvent<'_>) -> Flow {
         if event.note_on && (48..=60).contains(&event.note) {
             mpc_sample_sdk::platform::status::set_status("low note");
         }
-        NoteFlow::Forward
+        Flow::Forward
     }
 }
 ```

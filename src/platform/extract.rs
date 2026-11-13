@@ -22,11 +22,11 @@ const RANGE_START: usize = 0x78;
 /// Where it keeps the range end.
 const RANGE_END: usize = 0xd0;
 /// The app's Extract handler.
-const EXTRACT_HANDLER: usize = 0x0165_80d0;
+const EXTRACT_HANDLER: usize = crate::firmware::EXTRACT_HANDLER.offset;
 /// `[state + 0x2310]` is the app's program object.
 const STATE_PROGRAM: usize = 0x2310;
 /// `juce::String(const char *)`.
-const STRING_FROM_C: usize = 0x00f5_35c0;
+const STRING_FROM_C: usize = crate::firmware::STRING_FROM_C.offset;
 
 /// One extraction.
 pub struct Request<'a> {
@@ -143,7 +143,7 @@ static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
 /// # Safety
 ///
 /// Called once, before the hooks can run.
-pub unsafe fn record(constructor: usize, execute: usize) {
+pub(crate) unsafe fn record(constructor: usize, execute: usize) {
     // SAFETY: the caller's contract.
     unsafe {
         ORIGINAL_CTOR = if constructor == 0 {
@@ -189,7 +189,7 @@ fn snapshot() -> Option<Arc<Operation>> {
 /// # Safety
 ///
 /// The app calls this with its own arguments.
-pub unsafe extern "C" fn ctor_entry(
+pub(crate) unsafe extern "C" fn ctor_entry(
     command: usize,
     name: usize,
     destination: usize,
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn ctor_entry(
 ///
 /// The app calls this with its own command.
 #[must_use]
-pub unsafe extern "C" fn exec_entry(command: usize) -> i32 {
+pub(crate) unsafe extern "C" fn exec_entry(command: usize) -> i32 {
     let operation = snapshot().filter(|operation| lock(&operation.commands).contains(&command));
     // SAFETY: recorded before the hooks are installed.
     let execute = unsafe { *core::ptr::addr_of!(ORIGINAL_EXEC) };
@@ -497,7 +497,7 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
 /// # Errors
 /// Returns an error for invalid audio, an unavailable page or seed, or a failed
 /// extraction. This can block indefinitely if the native call hangs; see
-/// [`run_seeded`]. The destination is overwritten on success.
+/// `run_seeded`. The destination is overwritten on success.
 pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractError> {
     let channels = usize::try_from(request.channels).map_err(|_| ExtractError::Invalid)?;
     if !(1..=2).contains(&channels)
@@ -537,7 +537,7 @@ pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractErr
 ///
 /// # Errors
 /// Returns an error if the seed cannot be borrowed or the extraction fails.
-pub unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
+pub(crate) unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
     let destination = request.destination.ok_or(ExtractError::Invalid)?;
     let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
     if lock(&OPERATION)

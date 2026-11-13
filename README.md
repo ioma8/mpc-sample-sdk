@@ -31,12 +31,12 @@ See [the hands-on guide](docs/README.md) and the
 
 It owns everything that is not a feature:
 
-* **Firmware** — find the loaded app, verify the 37 fingerprint words, and map
+* **Firmware** — find the loaded app, verify the 38 fingerprint words, and map
   the image (`image`, `loader`).
 * **Native sample seed** — create a silent, app-owned stereo sample in memory
   for Extract when no pad provides a source. The SDK retains one seed for the
   process lifetime; Extract writes and registers the rendered output as a WAV.
-* **Hooks** — the in-memory `b`/relay/trampoline engine and all 17 sites.  The
+* **Hooks** — the in-memory `b`/relay/trampoline engine and all 18 sites.  The
   displaced originals stay inside `sites`; a mod never stores or types one.
 * **API** — the `Mod` trait, the event types, and `export_mod!`, which emits
   the `.init_array` entry point that installs the hooks and calls the mod.
@@ -93,17 +93,17 @@ code example.
 ## A minimal mod
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct MyMod;
 
 impl Mod for MyMod {
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         if event.action == mpc_sample_sdk::PadAction::Press {
             // ...
         }
-        PadFlow::Forward
+        Flow::Forward
     }
 }
 
@@ -119,8 +119,9 @@ the mod's `on_start` runs only after the hooks are in.
 ```
 src/lib.rs          the public surface and the crate docs
 src/event.rs        Mod, the event types and the flows
-src/loader.rs       install, export_mod!, the firmware words
-src/sites.rs        the 17 site adapters
+src/loader.rs       install, export_mod!, the firmware check
+src/firmware.rs     every firmware address the SDK uses, one table
+src/sites.rs        the 18 site adapters
 src/hook.rs         the patch engine
 src/image.rs        the image, memory window and firmware call helpers
 src/audio.rs        the ALSA taps, OutputInfo, latency and S32 mixing

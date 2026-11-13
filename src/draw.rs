@@ -10,21 +10,21 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::image::{self, TextBox};
 
 /// `setColour(uint32_t)`.
-const SET_COLOUR: usize = 0x102_d5e0;
+const SET_COLOUR: usize = crate::firmware::SET_COLOUR.offset;
 /// `fillRect(int, int, int, int)`.
-const FILL_RECT: usize = 0x102_e000;
+const FILL_RECT: usize = crate::firmware::FILL_RECT.offset;
 /// `String(const char *)`.
-const STRING_FROM_C: usize = 0x0f5_35c0;
+const STRING_FROM_C: usize = crate::firmware::STRING_FROM_C.offset;
 /// `Font(int, float)`.
-const FONT: usize = 0x108_2810;
+const FONT: usize = crate::firmware::FONT.offset;
 /// `setFont(const Font &)`.
-const SET_FONT: usize = 0x102_dca0;
+const SET_FONT: usize = crate::firmware::SET_FONT.offset;
 /// `drawText(const String &, int, int, int, int, int, int, float)`.
-const DRAW_TEXT: usize = 0x108_17b0;
+const DRAW_TEXT: usize = crate::firmware::DRAW_TEXT.offset;
 /// `Font::~Font()`.
-const FONT_DROP: usize = 0x107_0d60;
+const FONT_DROP: usize = crate::firmware::FONT_DROP.offset;
 /// `String::~String()`.
-const STRING_DROP: usize = 0x0f0_a290;
+const STRING_DROP: usize = crate::firmware::STRING_DROP.offset;
 
 /// A live `Graphics` object the app is painting with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

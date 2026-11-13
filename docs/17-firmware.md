@@ -6,7 +6,7 @@ image instead of patching the wrong offsets.
 ## The normal path
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct ModType;
@@ -16,8 +16,8 @@ impl Mod for ModType {
         mpc_sample_sdk::draw::show_toast("firmware verified");
     }
 
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
-        PadFlow::Forward
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
+        Flow::Forward
     }
 }
 
@@ -28,7 +28,7 @@ mpc_sample_sdk::export_mod!(ModType);
 which:
 
 1. finds the app's image,
-2. checks the 37 firmware words,
+2. checks the 38 firmware words,
 3. installs the hook sites,
 4. calls `on_start`.
 
@@ -50,7 +50,7 @@ if base == 0 {
 ```
 
 `loader::find_main()` returns the load address, or zero. `firmware_ok(base)`
-checks all 37 site words.
+checks all 38 fingerprint words.
 
 ## Manual installation
 

@@ -66,9 +66,9 @@ No two callbacks ever hold `&mut self` at the same time, so a mod's plain fields
 are sufficient inside a callback:
 
 ```rust
-fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+fn on_pad(&mut self, event: PadEvent) -> Flow {
     self.last_pad = event.pad; // exclusive access, no atomics required
-    PadFlow::Forward
+    Flow::Forward
 }
 ```
 

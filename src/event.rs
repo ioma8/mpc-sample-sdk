@@ -72,15 +72,6 @@ pub struct PadEvent {
     pub velocity: f32,
 }
 
-/// What the mod wants done with a pad event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PadFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A control-surface event.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceEvent {
@@ -111,15 +102,6 @@ impl SurfaceEvent {
     }
 }
 
-/// What the mod wants done with a control-surface event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SurfaceFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A turn of the DATA encoder.
 #[derive(Clone, Copy, Debug)]
 pub struct EncoderEvent {
@@ -127,15 +109,6 @@ pub struct EncoderEvent {
     pub surface: usize,
     /// The signed delta.
     pub delta: i32,
-}
-
-/// What the mod wants done with an encoder turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EncoderFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
 }
 
 /// A button event.
@@ -159,15 +132,6 @@ pub struct ButtonEvent {
     pub surface: usize,
 }
 
-/// What the mod wants done with a button event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ButtonFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A control-change event.
 #[derive(Clone, Copy, Debug)]
 pub struct CcEvent {
@@ -183,22 +147,15 @@ pub struct CcEvent {
     pub range: f32,
 }
 
-/// What the mod wants done with a control-change event.
+/// What the mod wants done with an event.
+///
+/// The same decision for every event kind. For a MIDI note that the mod
+/// rewrote with [`NoteEvent::replay_as_pad`], `Forward` makes the SDK forward
+/// the rewritten event and then restore it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CcFlow {
+pub enum Flow {
     /// Hand the event to the app unchanged.
     Forward,
-    /// Swallow it.
-    Consume,
-}
-
-/// What the mod wants done with a MIDI note.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoteFlow {
-    /// Forward the event with its original context and source.
-    Forward,
-    /// Forward the rewritten event as the selected pad.
-    Replayed,
     /// Swallow it.
     Consume,
 }
@@ -252,33 +209,33 @@ pub trait Mod: Send + 'static {
     fn on_start(&mut self) {}
 
     /// A pad was pressed or released.
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
-        PadFlow::Forward
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A control-surface event arrived.
-    fn on_surface(&mut self, _event: SurfaceEvent) -> SurfaceFlow {
-        SurfaceFlow::Forward
+    fn on_surface(&mut self, _event: SurfaceEvent) -> Flow {
+        Flow::Forward
     }
 
     /// The DATA encoder turned.
-    fn on_encoder(&mut self, _event: EncoderEvent) -> EncoderFlow {
-        EncoderFlow::Forward
+    fn on_encoder(&mut self, _event: EncoderEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A button was pressed or released.
-    fn on_button(&mut self, _event: ButtonEvent) -> ButtonFlow {
-        ButtonFlow::Forward
+    fn on_button(&mut self, _event: ButtonEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A control change arrived.
-    fn on_cc(&mut self, _event: CcEvent) -> CcFlow {
-        CcFlow::Forward
+    fn on_cc(&mut self, _event: CcEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A MIDI note event arrived.
-    fn on_note(&mut self, _event: &mut NoteEvent) -> NoteFlow {
-        NoteFlow::Forward
+    fn on_note(&mut self, _event: &mut NoteEvent) -> Flow {
+        Flow::Forward
     }
 
     /// The app is assigning a label; return a replacement or `None`.

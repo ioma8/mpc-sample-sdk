@@ -11,49 +11,6 @@ use crate::event::{AudioHooks, Mod};
 use crate::image::{self, Firmware};
 use crate::sites;
 
-/// Two words of every site the SDK patches, so a different firmware is refused
-/// instead of hooked at the wrong offsets.
-const FIRMWARE_SITES: [(usize, u32); 38] = [
-    (0x0159_f910, 0xd503_233f),
-    (0x00f5_35c0, 0xd503_233f),
-    (0x0114_9880, 0xd503_233f),
-    (0x013b_b930, 0xd503_233f),
-    (0x0140_dbc0, 0xd503_233f),
-    (0x0143_ed40, 0xd503_233f),
-    (0x0143_f0b0, 0xd503_233f),
-    (0x014a_7580, 0xd503_233f),
-    (0x0154_5a50, 0xd503_233f),
-    (0x0159_f230, 0x3940_2003),
-    (0x0159_f2f0, 0xd503_245f),
-    (0x015e_70c0, 0xd503_233f),
-    (0x016b_6060, 0xd503_245f),
-    (0x0192_d040, 0xd503_233f),
-    (0x0195_cf40, 0xd503_233f),
-    (0x0195_d1c0, 0xd503_233f),
-    (0x0196_0af0, 0xd503_233f),
-    (0x0196_0d50, 0xd503_233f),
-    (0x0196_8020, 0xd503_233f),
-    (0x01d8_aff0, 0xd503_233f),
-    (0x01df_3330, 0xd503_233f),
-    (0x01e2_70d0, 0xd503_233f),
-    (0x01e2_7360, 0xd503_233f),
-    (0x020a_3b10, 0xd503_233f),
-    (0x020a_7140, 0xd503_233f),
-    (0x020a_9fa0, 0xd503_233f),
-    (0x020a_a9e0, 0xd503_233f),
-    (0x0211_b090, 0xd503_233f),
-    (0x0214_72f0, 0xd503_233f),
-    (0x023a_ff60, 0xd503_233f),
-    (0x027e_4400, 0xd503_233f),
-    (0x0280_4e90, 0xd503_233f),
-    (0x0280_dca0, 0xd503_233f),
-    (0x0281_00c0, 0xd503_233f),
-    (0x0281_2f10, 0xd503_245f),
-    (0x0281_4ec0, 0xd503_233f),
-    (0x0282_2260, 0xd503_233f),
-    (0x0294_1ff0, 0xd503_245f),
-];
-
 /// Why a mod could not be installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallError {
@@ -150,7 +107,7 @@ fn dispatch<R>(
 /// Whether every site word matches the tested firmware.
 #[must_use]
 pub fn firmware_ok(base: usize) -> bool {
-    for (offset, expected) in FIRMWARE_SITES {
+    for (offset, expected) in crate::firmware::fingerprints() {
         let Some(word) = image::read_u32(base + offset) else {
             return false;
         };
@@ -232,6 +189,7 @@ mod tests {
 
     use super::{dispatch, firmware_ok};
     use crate::event::Mod;
+    use crate::image::test_memory;
 
     #[derive(Default)]
     struct Probe;
@@ -240,6 +198,27 @@ mod tests {
 
     fn leaked() -> &'static mut dyn Mod {
         Box::leak(Box::new(Probe))
+    }
+
+    /// Fixture bytes for every fingerprint word, laid out at `base`.
+    fn tested_image(base: usize) -> Vec<(usize, Vec<u8>)> {
+        crate::firmware::fingerprints()
+            .map(|(offset, word)| (base + offset, word.to_le_bytes().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn the_tested_firmware_passes_every_fingerprint_word() {
+        let base = 0x4000_0000;
+        assert!(test_memory::with(tested_image(base), || firmware_ok(base)));
+    }
+
+    #[test]
+    fn one_wrong_word_refuses_the_whole_image() {
+        let base = 0x4000_0000;
+        let mut image = tested_image(base);
+        image[20].1 = 0_u32.to_le_bytes().to_vec();
+        assert!(!test_memory::with(image, || firmware_ok(base)));
     }
 
     #[test]

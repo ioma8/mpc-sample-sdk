@@ -8,7 +8,7 @@
 use crate::image;
 
 /// The Sample page's vtable, as an offset from the image base.
-pub const SCREEN_VTABLE: usize = 0x6e2_12a0;
+pub const SCREEN_VTABLE: usize = crate::firmware::SAMPLE_PAGE_VTABLE.offset;
 /// `[screen + 0x178]` is the page's binding.
 const SCREEN_BINDING: usize = 0x178;
 /// `[binding + 0x60]` is the state the instrument lives in.
@@ -20,7 +20,7 @@ const LAYERS_SAMPLE: usize = 0x4a8;
 /// `[sample + 0x130]` is its metadata block.
 const SAMPLE_METADATA: usize = 0x130;
 /// The app's "is this page showing a sample" predicate.
-const PAGE_HAS_SAMPLE: usize = 0x112_fd50;
+const PAGE_HAS_SAMPLE: usize = crate::firmware::CHOP_PREDICATE.offset;
 /// `[state + 0x2310]` is the app's program object.
 const STATE_PROGRAM: usize = 0x2310;
 /// Shortest and longest sample rate the app accepts.
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn the_screen_vtable_is_the_documented_one() {
-        assert_eq!(SCREEN_VTABLE, 0x6e2_12a0);
+        assert_eq!(SCREEN_VTABLE, crate::firmware::SAMPLE_PAGE_VTABLE.offset);
         assert!(RATE_RANGE.contains(&44_100));
         assert!(!RATE_RANGE.contains(&4_000));
         // A zero screen is never a selection.

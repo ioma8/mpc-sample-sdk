@@ -133,7 +133,7 @@ fn capture_empty_pads(borrow: &mut Borrow, surface: usize) {
 /// # Safety
 /// The screen and surface must remain live on the owning UI thread until cleanup.
 #[must_use]
-pub unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
+pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
     let mut borrow = borrow_state();
     if borrow.slot != 0 {
         return None;
@@ -186,7 +186,7 @@ fn clear_extra_provider_pads(provider: usize, destination: i32) {
 /// Call on the owning UI thread while the original page and surface remain live.
 /// Returns false if the original layer could not be restored.
 #[must_use]
-pub unsafe fn finish(destination: i32) -> bool {
+pub(crate) unsafe fn finish(destination: i32) -> bool {
     let (provider, restored) = clear_borrow();
     if restored {
         clear_extra_provider_pads(provider, destination);

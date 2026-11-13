@@ -10,7 +10,7 @@ thread, never both at once. `export_mod!` gives the type a constructor in
 ## The smallest useful mod
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct Hello;
@@ -20,9 +20,9 @@ impl Mod for Hello {
         mpc_sample_sdk::draw::show_toast("Hello from the SDK");
     }
 
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
         // Forward means "the app still gets this event".
-        PadFlow::Forward
+        Flow::Forward
     }
 }
 
@@ -32,7 +32,7 @@ mpc_sample_sdk::export_mod!(Hello);
 ## What the SDK does for you
 
 - Finds `/usr/bin/MPC Sample` and checks the 37-word firmware fingerprint.
-- Patches the 17 hook sites; the displaced originals stay private.
+- Patches the 18 hook sites; the displaced originals stay private.
 - Decodes every event into the types in `event.rs`.
 - Forwards the event unless you return `Consume`.
 - Calls `on_start` only after installation succeeded.
@@ -44,25 +44,25 @@ if you need to report it.
 ## Overriding several callbacks
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct Demo;
 
 impl Mod for Demo {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             mpc_sample_sdk::draw::show_toast("DATA pressed");
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         if event.pad == 4 {
             mpc_sample_sdk::draw::show_toast("pad 5");
-            return PadFlow::Consume;
+            return Flow::Consume;
         }
-        PadFlow::Forward
+        Flow::Forward
     }
 }
 

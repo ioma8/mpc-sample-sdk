@@ -87,13 +87,13 @@ pub fn verify(sample: usize, positions: &[u32], frames: u32) -> bool {
 }
 
 /// The app's slice Reset.
-const SLICE_RESET: usize = 0x295_0aa0;
+const SLICE_RESET: usize = crate::firmware::SLICE_RESET.offset;
 /// The app's slice Insert.
-const SLICE_INSERT: usize = 0x295_0d20;
+const SLICE_INSERT: usize = crate::firmware::SLICE_INSERT.offset;
 /// The app's "reconcile the last slice's end" setter.
-const SLICE_SET_END: usize = 0x295_0bb0;
+const SLICE_SET_END: usize = crate::firmware::SLICE_SET_END.offset;
 /// The app's selection setter.
-const SELECT_SLICE: usize = 0x166_80a0;
+const SELECT_SLICE: usize = crate::firmware::SELECT_SLICE.offset;
 /// `[screen + 0x180]` is the view's selection object.
 const SCREEN_SELECTION: usize = 0x180;
 /// `[selection + 0x618]` is where the selection index goes.
@@ -169,7 +169,7 @@ pub unsafe fn write_markers(sample: usize, positions: &[u32], frames: u32, scree
 
 /// The view's cached chop mode callback, used when the binding is already torn
 /// down.
-const SET_CHOP_MODE: usize = 0x15d_2840;
+const SET_CHOP_MODE: usize = crate::firmware::SET_CHOP_MODE.offset;
 /// `[screen + 0x168]` is the chop binding.
 const SCREEN_BINDING: usize = 0x168;
 /// The binding's flags byte, owner, manager and invoke slot.

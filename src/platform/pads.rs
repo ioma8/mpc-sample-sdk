@@ -8,9 +8,9 @@ use crate::image;
 
 /// The app's "count free pads" entry, as an offset into the program object's
 /// vtable call.
-const FREE_PAD: usize = 0x286_dd00;
+const FREE_PAD: usize = crate::firmware::FREE_PAD.offset;
 /// The app's "is this pad state busy" entry.
-const PAD_BUSY: usize = 0x280_47b0;
+const PAD_BUSY: usize = crate::firmware::PAD_BUSY.offset;
 /// `[program + 0x2808]` is the first pad state, `+0x2810` the last.
 const PAD_STATES: usize = 0x2808;
 /// The app never has more pads than this.
@@ -202,7 +202,7 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FREE_PAD, MAX_PADS, PAD_BUSY, PAD_STATES, has_room};
+    use super::{MAX_PADS, PAD_STATES, has_room};
 
     #[test]
     fn an_unknown_program_has_no_proven_room() {
@@ -215,8 +215,6 @@ mod tests {
 
     #[test]
     fn the_offsets_are_the_documented_ones() {
-        assert_eq!(FREE_PAD, 0x286_dd00);
-        assert_eq!(PAD_BUSY, 0x280_47b0);
         assert_eq!(PAD_STATES, 0x2808);
         assert_eq!(MAX_PADS, 128);
     }

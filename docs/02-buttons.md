@@ -34,16 +34,16 @@ Use the named constants in `mpc_sample_sdk::event::button`; `code` remains avail
 ## Example: a chord and a toast
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Buttons;
 
 impl Mod for Buttons {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed && event.shift {
             mpc_sample_sdk::draw::show_toast("SHIFT + DATA");
-            return ButtonFlow::Consume;
+            return Flow::Consume;
         }
         if event.code == mpc_sample_sdk::event::button::SHIFT {
             mpc_sample_sdk::platform::status::set_status(if event.pressed {
@@ -52,7 +52,7 @@ impl Mod for Buttons {
                 "SHIFT up"
             });
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 
@@ -67,19 +67,19 @@ mpc_sample_sdk::export_mod!(Buttons);
 through the app's own handler, which is useful when a mod synthesizes a press:
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Replay;
 
 impl Mod for Replay {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             // SAFETY: `event` was captured in this callback, so its context and
             // surface are still live while we replay it.
             let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 ```

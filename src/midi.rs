@@ -141,7 +141,7 @@ fn restore(event: &mut [u8], saved: Saved) {
 /// One note event, decoded and ready to be replayed.
 ///
 /// The mod reads the fields, optionally calls [`NoteEvent::replay_as_pad`], and
-/// returns [`crate::NoteFlow`]; the SDK forwards and restores the event.
+/// returns [`crate::Flow`]; the SDK forwards and restores the event.
 pub struct NoteEvent<'event> {
     /// The app's `this` pointer.
     pub app: usize,
@@ -241,6 +241,13 @@ impl<'event> NoteEvent<'event> {
         self.forward_context = context;
         self.forward_source = REPLAY_SOURCE;
         true
+    }
+
+    /// Whether the event was rewritten by [`NoteEvent::replay_as_pad`] and is
+    /// still awaiting its forward and restore.
+    #[must_use]
+    pub const fn is_replayed(&self) -> bool {
+        self.saved.is_some()
     }
 
     /// The context the SDK forwards with.

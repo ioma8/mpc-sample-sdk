@@ -8,11 +8,11 @@ use crate::image;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The Sample page's vtable, as an offset from the image base.
-pub const SAMPLE_PAGE_VTABLE: usize = 0x6e2_12a0;
+pub const SAMPLE_PAGE_VTABLE: usize = crate::firmware::SAMPLE_PAGE_VTABLE.offset;
 /// `[screen + 0x1ee0]` is the chop-mode view the predicate takes.
 const CHOP_VIEW: usize = 0x1ee0;
 /// The app's predicate for "this view is in chop mode".
-const CHOP_PREDICATE: usize = 0x112_fd50;
+const CHOP_PREDICATE: usize = crate::firmware::CHOP_PREDICATE.offset;
 
 /// The Sample page the mod last painted.  It keeps its exported name because the
 /// device tests find the page through it.
@@ -71,7 +71,7 @@ pub unsafe fn chop_mode(screen: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CHOP_VIEW, SAMPLE_PAGE_VTABLE, chop_mode, screen, set_screen, visible};
+    use super::{CHOP_VIEW, chop_mode, screen, set_screen, visible};
 
     #[test]
     fn a_null_screen_is_never_a_sample_page() {
@@ -79,7 +79,6 @@ mod tests {
         assert!(!unsafe { visible(0) });
         // SAFETY: null is rejected without native calls.
         assert!(!unsafe { chop_mode(0) });
-        assert_eq!(SAMPLE_PAGE_VTABLE, 0x6e2_12a0);
         assert_eq!(CHOP_VIEW, 0x1ee0);
     }
 

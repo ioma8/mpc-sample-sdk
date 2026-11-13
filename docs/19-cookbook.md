@@ -7,7 +7,7 @@ open, prints the selected sample's geometry, and closes with the same chord.
 use mpc_sample_sdk::platform::{page, selection, status};
 use mpc_sample_sdk::{
     draw::{self, Graphics},
-    ButtonEvent, ButtonFlow, Mod, PadAction, PadEvent, PadFlow, PaintEvent,
+    ButtonEvent, Flow, Mod, PadAction, PadEvent, Flow, PaintEvent,
 };
 
 use mpc_sample_sdk::event::button;
@@ -22,9 +22,9 @@ impl Mod for MyMod {
         status::set_status("MyMod ready");
     }
 
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == button::SHIFT {
-            return ButtonFlow::Forward;
+            return Flow::Forward;
         }
         if event.code == button::DATA && event.pressed && event.shift {
             self.open = !self.open;
@@ -34,14 +34,14 @@ impl Mod for MyMod {
                 status::set_status("MyMod closed");
             }
             draw::repaint_painted();
-            return ButtonFlow::Consume;
+            return Flow::Consume;
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         if !self.open || event.pad != 0 || event.action != PadAction::Press {
-            return PadFlow::Forward;
+            return Flow::Forward;
         }
         let screen = page::screen();
         // SAFETY: `screen` is the live Sample page recorded by the paint hook.
@@ -56,7 +56,7 @@ impl Mod for MyMod {
             draw::show_toast("no sample");
             draw::repaint_painted();
         }
-        PadFlow::Consume
+        Flow::Consume
     }
 
     fn on_paint(&mut self, graphics: &mut Graphics, event: PaintEvent) {

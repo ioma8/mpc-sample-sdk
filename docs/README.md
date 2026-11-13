@@ -51,14 +51,14 @@ A mod is installed by `export_mod!`, built as a `cdylib`, and loaded with
 `LD_PRELOAD` on the device (or `lab.py preload` in the virtual lab).
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct MyMod;
 
 impl Mod for MyMod {
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
-        PadFlow::Forward
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
+        Flow::Forward
     }
 }
 

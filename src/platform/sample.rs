@@ -191,8 +191,8 @@ pub fn geometry(sample: usize) -> Option<(u32, u16, u32)> {
 }
 
 // The app's Temporary Samples service and one native seed for Extract.
-const BUILD_SAMPLE: usize = 0x01df_4ac0;
-const RELEASE_SHARED: usize = 0x0123_bca0;
+const BUILD_SAMPLE: usize = crate::firmware::BUILD_SAMPLE.offset;
+const RELEASE_SHARED: usize = crate::firmware::RELEASE_SHARED.offset;
 /// One and a half seconds at 44.1 kHz: the longest synth take must fit inside
 /// the seed, because Extract's range may not exceed the source sample.
 const SEED_FRAMES: u32 = 66_150;

@@ -76,8 +76,16 @@ impl Firmware {
 }
 
 /// Read exactly `out.len()` bytes of process memory.
+///
+/// Every typed read in the SDK goes through here. On the device the bytes come
+/// from `/proc/self/mem`; under `cargo test` a `test_memory::with` fixture can
+/// supply them instead, so the firmware walks have a success path on the host.
 #[must_use]
 pub fn read(address: usize, out: &mut [u8]) -> bool {
+    #[cfg(test)]
+    if let Some(found) = test_memory::read(address, out) {
+        return found;
+    }
     platform::read(address, out)
 }
 
@@ -226,7 +234,7 @@ mod platform {
     /// Offset inside the stock app's text segment, used to recognise which
     /// loaded image is the app.  Any `PT_LOAD` that covers it belongs to firmware
     /// 1.3.0.12.
-    const APP_PROBE_OFFSET: usize = 0x00b5_5b00;
+    const APP_PROBE_OFFSET: usize = crate::firmware::APP_PROBE_OFFSET;
 
     struct Search {
         base: Option<usize>,
@@ -461,6 +469,51 @@ pub unsafe fn mapped(address: *const u8) -> bool {
     ranges
         .iter()
         .any(|&(low, high)| address >= low && address < high)
+}
+
+/// A fixture memory for host tests: named regions of bytes at fixed addresses.
+#[cfg(test)]
+pub(crate) mod test_memory {
+    use std::cell::RefCell;
+
+    /// `(address, bytes)` for one region.
+    type Region = (usize, Vec<u8>);
+
+    thread_local! {
+        static REGIONS: RefCell<Option<Vec<Region>>> = const { RefCell::new(None) };
+    }
+
+    /// Run `f` with `regions` standing in for process memory on this thread.
+    ///
+    /// Each region is `(address, bytes)`; a read succeeds only when it lies
+    /// entirely inside one region.
+    pub(crate) fn with<R>(regions: Vec<Region>, f: impl FnOnce() -> R) -> R {
+        REGIONS.with(|slot| *slot.borrow_mut() = Some(regions));
+        let result = f();
+        REGIONS.with(|slot| *slot.borrow_mut() = None);
+        result
+    }
+
+    /// The fixture's answer, or `None` when no fixture is installed.
+    pub(super) fn read(address: usize, out: &mut [u8]) -> Option<bool> {
+        REGIONS.with(|slot| {
+            let slot = slot.borrow();
+            let regions = slot.as_ref()?;
+            Some(regions.iter().any(|(start, bytes)| {
+                let Some(offset) = address.checked_sub(*start) else {
+                    return false;
+                };
+                let Some(end) = offset.checked_add(out.len()) else {
+                    return false;
+                };
+                if end > bytes.len() {
+                    return false;
+                }
+                out.copy_from_slice(&bytes[offset..end]);
+                true
+            }))
+        })
+    }
 }
 
 #[cfg(test)]

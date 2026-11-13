@@ -8,8 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::draw::{self, Graphics, Repaint};
 use crate::event::{
-    self, ButtonEvent, ButtonFlow, CcEvent, CcFlow, EncoderEvent, EncoderFlow, NoteFlow, PadAction,
-    PadEvent, PadFlow, PaintEvent, SurfaceEvent, SurfaceFlow,
+    self, ButtonEvent, CcEvent, EncoderEvent, Flow, PadAction, PadEvent, PaintEvent, SurfaceEvent,
 };
 use crate::hook;
 use crate::image;
@@ -113,75 +112,75 @@ pub unsafe fn install(base: usize) -> bool {
 fn table() -> [Site; 18] {
     [
         Site {
-            offset: 0x0154_5a50,
+            offset: crate::firmware::SIXTEEN_CTOR.offset,
             handler: sixteen_ctor as *const (),
         },
         Site {
-            offset: 0x0214_72f0,
+            offset: crate::firmware::SIXTEEN_PROC.offset,
             handler: sixteen_proc as *const (),
         },
         Site {
-            offset: 0x0140_dbc0,
+            offset: crate::firmware::DATA_HOOK.offset,
             handler: data as *const (),
         },
         Site {
-            offset: 0x01e2_7360,
+            offset: crate::firmware::NOTE_ON.offset,
             handler: note_on as *const (),
         },
         Site {
-            offset: 0x023a_ff60,
+            offset: crate::firmware::SURFACE.offset,
             handler: surface as *const (),
         },
         Site {
-            offset: 0x01e2_70d0,
+            offset: crate::firmware::NOTE_OFF.offset,
             handler: note_off as *const (),
         },
         Site {
-            offset: 0x0159_f230,
+            offset: crate::firmware::CC.offset,
             handler: cc as *const (),
         },
         Site {
-            offset: 0x027e_4400,
+            offset: crate::firmware::PITCH.offset,
             handler: pitch as *const (),
         },
         Site {
-            offset: 0x0159_f2f0,
+            offset: crate::firmware::BUTTONS.offset,
             handler: buttons as *const (),
         },
         Site {
-            offset: 0x0114_9880,
+            offset: crate::firmware::REPAINT.offset,
             handler: repaint as *const (),
         },
         Site {
-            offset: 0x00f5_35c0,
+            offset: crate::firmware::STRING_FROM_C.offset,
             handler: str_assign as *const (),
         },
         Site {
-            offset: 0x0143_ed40,
+            offset: crate::firmware::EXTRACT_CTOR.offset,
             handler: extract::ctor_entry as *const (),
         },
         Site {
-            offset: 0x0143_f0b0,
+            offset: crate::firmware::EXTRACT_EXEC.offset,
             handler: extract::exec_entry as *const (),
         },
         Site {
-            offset: 0x01d8_aff0,
+            offset: crate::firmware::WRITER.offset,
             handler: writer_entry as *const (),
         },
         Site {
-            offset: 0x0211_b090,
+            offset: crate::firmware::NOTE.offset,
             handler: note as *const (),
         },
         Site {
-            offset: 0x0196_8020,
+            offset: crate::firmware::CONTROL.offset,
             handler: control_entry as *const (),
         },
         Site {
-            offset: 0x01df_3330,
+            offset: crate::firmware::SAMPLE_SERVICE_CTOR.offset,
             handler: sample_service_ctor as *const (),
         },
         Site {
-            offset: 0x0159_f910,
+            offset: crate::firmware::LIGHTING.offset,
             handler: lighting as *const (),
         },
     ]
@@ -280,8 +279,8 @@ unsafe extern "C" fn sixteen_proc(app: usize, index: i32, out: usize) {
 /// The app calls this with its own surface and delta.
 unsafe extern "C" fn data(surface: usize, delta: i32) {
     let event = EncoderEvent { surface, delta };
-    let flow = with_mod(|module| module.on_encoder(event)).unwrap_or(EncoderFlow::Forward);
-    if flow == EncoderFlow::Forward {
+    let flow = with_mod(|module| module.on_encoder(event)).unwrap_or(Flow::Forward);
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize, i32)>(2) {
@@ -311,8 +310,8 @@ unsafe extern "C" fn note_on(
         properties,
         velocity,
     };
-    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(PadFlow::Forward);
-    if flow == PadFlow::Forward {
+    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(Flow::Forward);
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize, i32, i32, usize, f32)>(3)
@@ -339,8 +338,8 @@ unsafe extern "C" fn surface(surface: usize, code: i32, payload: usize) {
         note: if decoded { raw[1] } else { 0 },
         velocity: if decoded { raw[2] } else { 0 },
     };
-    let flow = with_mod(|module| module.on_surface(event)).unwrap_or(SurfaceFlow::Forward);
-    if flow == SurfaceFlow::Forward {
+    let flow = with_mod(|module| module.on_surface(event)).unwrap_or(Flow::Forward);
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize, i32, usize)>(4) {
@@ -364,8 +363,8 @@ unsafe extern "C" fn note_off(input: usize, source: i32, pad: i32) {
         properties: 0,
         velocity: 0.0,
     };
-    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(PadFlow::Forward);
-    if flow == PadFlow::Forward {
+    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(Flow::Forward);
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize, i32, i32)>(5) {
@@ -394,8 +393,8 @@ unsafe extern "C" fn cc(event: usize, raw: u32, low: f32, range: f32) {
         low,
         range,
     };
-    let flow = with_mod(|module| module.on_cc(message)).unwrap_or(CcFlow::Forward);
-    if flow == CcFlow::Forward {
+    let flow = with_mod(|module| module.on_cc(message)).unwrap_or(Flow::Forward);
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize, u32, f32, f32)>(6) {
@@ -462,7 +461,7 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
         erase: event::erase(),
         surface,
     };
-    let flow = with_mod(|module| module.on_button(message)).unwrap_or(ButtonFlow::Forward);
+    let flow = with_mod(|module| module.on_button(message)).unwrap_or(Flow::Forward);
     // Track the hold state after the mod has seen the event, so it sees the
     // state that was in effect when the key was pressed.
     if code == event::button::SHIFT {
@@ -471,7 +470,7 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
     if code == event::button::ERASE {
         event::set_erase(pressed);
     }
-    if flow == ButtonFlow::Forward {
+    if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = original::<unsafe extern "C" fn(usize)>(8) {
@@ -547,20 +546,9 @@ unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: us
     };
     // SAFETY: the site supplies the app's own displaced pitch setter.
     let mut message = unsafe { NoteEvent::new(app, context, storage, source as u64, pitch_off) };
-    let flow = with_mod(|module| module.on_note(&mut message)).unwrap_or(NoteFlow::Forward);
+    let flow = with_mod(|module| module.on_note(&mut message)).unwrap_or(Flow::Forward);
     match flow {
-        NoteFlow::Forward => {
-            message.restore();
-            // SAFETY: the original is the app's own dispatcher.
-            unsafe {
-                if let Some(forward) =
-                    original::<unsafe extern "C" fn(usize, usize, usize, usize)>(14)
-                {
-                    forward(app, context, message.pointer() as usize, source);
-                }
-            }
-        }
-        NoteFlow::Replayed => {
+        Flow::Forward if message.is_replayed() => {
             // SAFETY: the original is the app's own dispatcher.
             unsafe {
                 if let Some(forward) =
@@ -576,7 +564,18 @@ unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: us
             }
             message.restore();
         }
-        NoteFlow::Consume => message.restore(),
+        Flow::Forward => {
+            message.restore();
+            // SAFETY: the original is the app's own dispatcher.
+            unsafe {
+                if let Some(forward) =
+                    original::<unsafe extern "C" fn(usize, usize, usize, usize)>(14)
+                {
+                    forward(app, context, message.pointer() as usize, source);
+                }
+            }
+        }
+        Flow::Consume => message.restore(),
     }
 }
 
@@ -630,7 +629,7 @@ unsafe extern "C" fn page_paint(component: usize, graphics: usize) {
 
 /// Install the page paint over the app's vtable slot.
 fn install_paint(base: usize) -> bool {
-    let address = base + 0x6e2_12a0;
+    let address = base + crate::firmware::SAMPLE_PAGE_VTABLE.offset;
     // SAFETY: the pointer is only compared, never dereferenced.
     if unsafe { !image::mapped(address as *const u8) } {
         return false;

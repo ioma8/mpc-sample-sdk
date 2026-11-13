@@ -20,11 +20,11 @@ const BLOCK: usize = 512;
 /// Reverb tail rendered after the sample, in seconds.
 const REVERB_TAIL_SECONDS: usize = 4;
 /// Factory of the reverb effect.
-const REVERB_FACTORY: usize = 0x03c4_45b0;
+const REVERB_FACTORY: usize = crate::firmware::REVERB_FACTORY.offset;
 /// Factory of the vinyl effect.
-const VINYL_FACTORY: usize = 0x03c4_3cf0;
+const VINYL_FACTORY: usize = crate::firmware::VINYL_FACTORY.offset;
 /// Factory of the decimator effect.
-const DECIMATOR_FACTORY: usize = 0x03c4_57a0;
+const DECIMATOR_FACTORY: usize = crate::firmware::DECIMATOR_FACTORY.offset;
 /// Offset of the parameter array inside an effect object.
 const PARAMETERS_OFFSET: usize = 0x18;
 /// How far past the load address a vtable or method can lie and still be the
