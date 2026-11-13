@@ -207,7 +207,7 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PADS, PAD_STATES, has_room};
+    use super::{MAX_PADS, PAD_STATES, SURFACE_PADS, SURFACE_PADS_END, has_room, sample_for_pad};
 
     #[test]
     fn an_unknown_program_has_no_proven_room() {
@@ -242,5 +242,33 @@ mod tests {
         // because every slot is empty.
         let free = test_memory::with(regions, || unsafe { super::free_estimate(program) });
         assert_eq!(free, 3);
+    }
+
+    #[test]
+    fn a_pad_leads_through_its_state_and_layers_to_its_sample() {
+        use crate::image::test_memory;
+        let surface: usize = 0x0070_0000;
+        let array: usize = 0x0071_0000;
+        let state: usize = 0x0072_0000;
+        let layers: usize = 0x0073_0000;
+        let sample: usize = 0x0074_0000;
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (surface + SURFACE_PADS, pointer(array)),
+            (surface + SURFACE_PADS_END, pointer(array + 8)),
+            (array, pointer(state)),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET,
+                pointer(layers),
+            ),
+            (
+                layers + crate::platform::descent::LAYERS_SAMPLE_OFFSET,
+                pointer(sample),
+            ),
+        ];
+        assert_eq!(
+            test_memory::with(regions, || sample_for_pad(surface, 0)),
+            Some(sample)
+        );
     }
 }

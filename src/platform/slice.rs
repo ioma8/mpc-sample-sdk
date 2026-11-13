@@ -287,4 +287,25 @@ mod tests {
         let too_many = vec![0_u32; MAX_SLICES as usize + 1];
         assert!(!valid_positions(&too_many, 100), "over the slice limit");
     }
+
+    #[test]
+    fn the_slice_vector_of_a_chopped_sample_is_counted_from_its_metadata() {
+        use crate::image::test_memory;
+        let sample: usize = 0x0060_0000;
+        let metadata: usize = 0x0061_0000;
+        let begin: usize = 0x0062_0000;
+        let end = begin + 3 * SLICE_BYTES as usize;
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (
+                sample + crate::platform::descent::SAMPLE_METADATA_OFFSET,
+                pointer(metadata),
+            ),
+            (metadata + super::SLICES_BEGIN, pointer(begin)),
+            (metadata + super::SLICES_END, pointer(end)),
+            (metadata + super::SLICES_CAPACITY, pointer(end + 64)),
+        ];
+        let count = test_memory::with(regions, || super::slice_count(sample).map(|s| s.count));
+        assert_eq!(count, Some(3));
+    }
 }

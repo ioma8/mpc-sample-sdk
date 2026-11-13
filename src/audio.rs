@@ -40,27 +40,95 @@ const DEVICE_MAX_CHANNELS: usize = 32;
 #[derive(Clone, Copy, Debug)]
 pub struct OutputInfo {
     /// The app's PCM handle, for a mod that needs its own ALSA query.
-    pub pcm: usize,
+    pcm: usize,
     /// Interleaved channel count.
-    pub channels: usize,
+    channels: usize,
     /// Stream rate in Hz.
-    pub rate: u32,
+    rate: u32,
     /// Frames in this block.
-    pub block_frames: usize,
+    block_frames: usize,
     /// The device's own reported delay, in frames.
-    pub device_delay: u32,
+    device_delay: u32,
     /// The output ring's size in frames, zero until read.
-    pub buffer_out: u32,
+    buffer_out: u32,
     /// The output ring's period size in frames, zero until read.
-    pub period_out: u32,
+    period_out: u32,
     /// The input ring's size in frames, zero until read.
-    pub buffer_in: u32,
+    buffer_in: u32,
     /// The input ring's period size in frames, zero until read.
-    pub period_in: u32,
+    period_in: u32,
     /// The input stream's own backlog, in frames.
-    pub input_delay: u32,
+    input_delay: u32,
     /// The loudest output sample so far, as bits.
-    pub output_peak_bits: u32,
+    output_peak_bits: u32,
+}
+
+impl OutputInfo {
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn pcm(&self) -> usize {
+        self.pcm
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn block_frames(&self) -> usize {
+        self.block_frames
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn device_delay(&self) -> u32 {
+        self.device_delay
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn buffer_out(&self) -> u32 {
+        self.buffer_out
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn period_out(&self) -> u32 {
+        self.period_out
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn buffer_in(&self) -> u32 {
+        self.buffer_in
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn period_in(&self) -> u32 {
+        self.period_in
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn input_delay(&self) -> u32 {
+        self.input_delay
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn output_peak_bits(&self) -> u32 {
+        self.output_peak_bits
+    }
 }
 
 impl OutputInfo {
@@ -158,30 +226,37 @@ impl Alsa {
     }
 }
 
-/// The device stream's geometry: its buffer in frames, its channels and whether
-/// it carries 32-bit samples.
+/// What the device reports about one stream. A field the device does not report
+/// is zero (or `false`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamGeometry {
+    /// The buffer size in frames.
+    pub buffer: u32,
+    /// The period size in frames.
+    pub period: u32,
+    /// The channel count.
+    pub channels: u32,
+    /// Whether the stream carries 32-bit samples.
+    pub s32: bool,
+}
+
+/// The device stream's geometry, or `None` when the device cannot be queried.
 ///
 /// # Safety
 ///
-/// `pcm` must be the app's live PCM handle; the out pointers may be null.
-pub unsafe fn stream_geometry(
-    pcm: usize,
-    channels: *mut u32,
-    s32: *mut i32,
-    period: *mut u32,
-) -> u32 {
-    let Some(alsa) = Alsa::load() else {
-        return 0;
-    };
+/// `pcm` must be the app's live PCM handle.
+#[must_use]
+pub unsafe fn stream_geometry(pcm: usize) -> Option<StreamGeometry> {
+    let alsa = Alsa::load()?;
     if pcm == 0 {
-        return 0;
+        return None;
     }
     let mut params: *mut libc::c_void = core::ptr::null_mut();
     // SAFETY: the entry point allocates the parameters.
     if unsafe { (alsa.malloc)(core::ptr::from_mut(&mut params)) } < 0 || params.is_null() {
-        return 0;
+        return None;
     }
-    let mut frames = 0_u32;
+    let mut geometry = StreamGeometry::default();
     // SAFETY: the handle is live and `params` is ours.
     if unsafe { (alsa.current)(pcm as *mut libc::c_void, params) } >= 0 {
         let mut size = 0_u64;
@@ -189,47 +264,38 @@ pub unsafe fn stream_geometry(
         if unsafe { (alsa.bufsize)(params, core::ptr::from_mut(&mut size)) } >= 0
             && size < DEVICE_MAX_FRAMES
         {
-            frames = u32::try_from(size).unwrap_or(0);
+            geometry.buffer = u32::try_from(size).unwrap_or(0);
         }
-        if !period.is_null() {
-            let mut size = 0_u64;
-            let mut direction = 0_i32;
-            // SAFETY: see above.
-            if unsafe {
-                (alsa.period)(
-                    params,
-                    core::ptr::from_mut(&mut size),
-                    core::ptr::from_mut(&mut direction),
-                )
-            } >= 0
-                && size < DEVICE_MAX_FRAMES
-            {
-                // SAFETY: the caller passed a writable slot.
-                unsafe { *period = u32::try_from(size).unwrap_or(0) };
-            }
+        let mut size = 0_u64;
+        let mut direction = 0_i32;
+        // SAFETY: see above.
+        if unsafe {
+            (alsa.period)(
+                params,
+                core::ptr::from_mut(&mut size),
+                core::ptr::from_mut(&mut direction),
+            )
+        } >= 0
+            && size < DEVICE_MAX_FRAMES
+        {
+            geometry.period = u32::try_from(size).unwrap_or(0);
         }
-        if !channels.is_null() {
-            let mut count = 0_u32;
-            // SAFETY: see above.
-            if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
-                && count > 0
-                && count as usize <= DEVICE_MAX_CHANNELS
-            {
-                // SAFETY: the caller passed a writable slot.
-                unsafe { *channels = count };
-            }
+        let mut count = 0_u32;
+        // SAFETY: see above.
+        if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
+            && count > 0
+            && count as usize <= DEVICE_MAX_CHANNELS
+        {
+            geometry.channels = count;
         }
-        if !s32.is_null() {
-            let mut format = -1;
-            // SAFETY: see above.
-            let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
-            // SAFETY: the caller passed a writable slot.
-            unsafe { *s32 = i32::from(known && format == FORMAT_S32_LE) };
-        }
+        let mut format = -1;
+        // SAFETY: see above.
+        let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
+        geometry.s32 = known && format == FORMAT_S32_LE;
     }
     // SAFETY: the parameters came from the malloc above.
     unsafe { (alsa.free)(params) };
-    frames
+    Some(geometry)
 }
 
 /// Frames the output tap keeps: two seconds at the device rate.
@@ -340,24 +406,15 @@ impl Stream {
     ///
     /// `pcm` is the app's live handle.
     unsafe fn refresh(&self, pcm: usize) -> Geometry {
-        let mut channels = 0_u32;
-        let mut s32 = 0_i32;
-        let mut period = 0_u32;
         // SAFETY: the geometry reads the stream's own parameters.
-        let frames = unsafe {
-            stream_geometry(
-                pcm,
-                core::ptr::from_mut(&mut channels),
-                core::ptr::from_mut(&mut s32),
-                core::ptr::from_mut(&mut period),
-            )
-        };
+        let device = unsafe { stream_geometry(pcm) }.unwrap_or_default();
+        let frames = device.buffer;
         let geometry = Geometry {
             pcm,
-            channels,
-            s32: s32 != 0,
+            channels: device.channels,
+            s32: device.s32,
             buffer: frames,
-            period,
+            period: device.period,
             rate: stream_rate(pcm),
         };
         self.pcm.store(geometry.pcm, Ordering::Release);

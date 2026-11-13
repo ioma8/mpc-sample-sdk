@@ -13,10 +13,13 @@
 pub(crate) enum Purpose {
     /// The SDK patches this address with a branch.
     Hook,
-    /// The SDK calls this address; it may be a data address for a vtable or font.
+    /// The SDK calls this address.
     Call,
     /// An image guard with no caller in this crate.
     Probe,
+    /// Data the SDK reads or compares, not code. It has no instruction word; the
+    /// caller checks the value it reads at run time.
+    Data,
 }
 
 /// One firmware location.
@@ -27,8 +30,8 @@ pub(crate) struct Entry {
     /// What the SDK does with the address; read by the table's own tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) purpose: Purpose,
-    /// The instruction word at `offset` in the tested firmware, when it has been
-    /// fingerprinted. `None` means the address is recorded but not yet verified.
+    /// The instruction word at `offset` in the tested firmware. `None` only for
+    /// data entries, which have no instruction to compare.
     pub(crate) word: Option<u32>,
 }
 
@@ -40,10 +43,18 @@ const fn hook(offset: usize, word: u32) -> Entry {
     }
 }
 
-const fn call(offset: usize) -> Entry {
+const fn call(offset: usize, word: u32) -> Entry {
     Entry {
         offset,
         purpose: Purpose::Call,
+        word: Some(word),
+    }
+}
+
+const fn data(offset: usize) -> Entry {
+    Entry {
+        offset,
+        purpose: Purpose::Data,
         word: None,
     }
 }
@@ -86,33 +97,59 @@ pub(crate) const LIGHTING: Entry = hook(0x0159_f910, PACIASP);
 
 // --- Calls: functions and data the SDK uses, recorded but not yet fingerprinted. ---
 
-pub(crate) const SET_COLOUR: Entry = call(0x102_d5e0);
-pub(crate) const FILL_RECT: Entry = call(0x102_e000);
-pub(crate) const SET_FONT: Entry = call(0x102_dca0);
-pub(crate) const DRAW_TEXT: Entry = call(0x108_17b0);
-pub(crate) const FONT: Entry = call(0x108_2810);
-pub(crate) const FONT_DROP: Entry = call(0x107_0d60);
-pub(crate) const STRING_DROP: Entry = call(0xf0_a290);
-pub(crate) const FREE_PAD: Entry = call(0x286_dd00);
-pub(crate) const PAD_BUSY: Entry = call(0x280_47b0);
-pub(crate) const SLICE_RESET: Entry = call(0x295_0aa0);
-pub(crate) const SLICE_INSERT: Entry = call(0x295_0d20);
-pub(crate) const SLICE_SET_END: Entry = call(0x295_0bb0);
-pub(crate) const SELECT_SLICE: Entry = call(0x166_80a0);
-pub(crate) const SET_CHOP_MODE: Entry = call(0x15d_2840);
-pub(crate) const SAMPLE_PAGE_VTABLE: Entry = call(0x6e2_12a0);
-pub(crate) const CHOP_PREDICATE: Entry = call(0x112_fd50);
-pub(crate) const REVERB_FACTORY: Entry = call(0x03c4_45b0);
-pub(crate) const VINYL_FACTORY: Entry = call(0x03c4_3cf0);
-pub(crate) const DECIMATOR_FACTORY: Entry = call(0x03c4_57a0);
-pub(crate) const BUILD_SAMPLE: Entry = call(0x01df_4ac0);
-pub(crate) const RELEASE_SHARED: Entry = call(0x0123_bca0);
-pub(crate) const EXTRACT_HANDLER: Entry = call(0x0165_80d0);
+pub(crate) const SET_COLOUR: Entry = call(0x102_d5e0, PACIASP);
+pub(crate) const FILL_RECT: Entry = call(0x102_e000, PACIASP);
+pub(crate) const SET_FONT: Entry = call(0x102_dca0, PACIASP);
+pub(crate) const DRAW_TEXT: Entry = call(0x108_17b0, PACIASP);
+pub(crate) const FONT: Entry = call(0x108_2810, PACIASP);
+pub(crate) const FONT_DROP: Entry = call(0x107_0d60, BTI_C);
+pub(crate) const STRING_DROP: Entry = call(0xf0_a290, BTI_C);
+pub(crate) const FREE_PAD: Entry = call(0x286_dd00, PACIASP);
+pub(crate) const PAD_BUSY: Entry = call(0x280_47b0, PACIASP);
+pub(crate) const SLICE_RESET: Entry = call(0x295_0aa0, PACIASP);
+pub(crate) const SLICE_INSERT: Entry = call(0x295_0d20, PACIASP);
+pub(crate) const SLICE_SET_END: Entry = call(0x295_0bb0, PACIASP);
+pub(crate) const SELECT_SLICE: Entry = call(0x166_80a0, PACIASP);
+pub(crate) const SET_CHOP_MODE: Entry = call(0x15d_2840, PACIASP);
+pub(crate) const SAMPLE_PAGE_VTABLE: Entry = data(0x6e2_12a0);
+pub(crate) const CHOP_PREDICATE: Entry = call(0x112_fd50, PACIASP);
+pub(crate) const REVERB_FACTORY: Entry = call(0x03c4_45b0, PACIASP);
+pub(crate) const VINYL_FACTORY: Entry = call(0x03c4_3cf0, PACIASP);
+pub(crate) const DECIMATOR_FACTORY: Entry = call(0x03c4_57a0, PACIASP);
+pub(crate) const BUILD_SAMPLE: Entry = call(0x01df_4ac0, PACIASP);
+pub(crate) const RELEASE_SHARED: Entry = call(0x0123_bca0, PACIASP);
+pub(crate) const EXTRACT_HANDLER: Entry = call(0x0165_80d0, PACIASP);
 
 /// Offset inside the stock app's text segment, used to recognise which loaded
 /// image is the app. Any `PT_LOAD` that covers it belongs to firmware 1.3.0.12.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const APP_PROBE_OFFSET: usize = 0x00b5_5b00;
+
+/// Every function and data entry the modules use, in one list.
+pub(crate) const CALLS: [Entry; 22] = [
+    SET_COLOUR,
+    FILL_RECT,
+    SET_FONT,
+    DRAW_TEXT,
+    FONT,
+    FONT_DROP,
+    STRING_DROP,
+    FREE_PAD,
+    PAD_BUSY,
+    SLICE_RESET,
+    SLICE_INSERT,
+    SLICE_SET_END,
+    SELECT_SLICE,
+    SET_CHOP_MODE,
+    SAMPLE_PAGE_VTABLE,
+    CHOP_PREDICATE,
+    REVERB_FACTORY,
+    VINYL_FACTORY,
+    DECIMATOR_FACTORY,
+    BUILD_SAMPLE,
+    RELEASE_SHARED,
+    EXTRACT_HANDLER,
+];
 
 /// Fingerprint words that no module calls directly. They are image guards that
 /// the loader has always checked; keep them until someone audits them.
@@ -161,17 +198,18 @@ pub(crate) const HOOKS: [Entry; 18] = [
     LIGHTING,
 ];
 
-/// Every entry whose word has been fingerprinted, which the loader verifies.
+/// Every entry with an instruction word, which the loader verifies.
 pub(crate) fn fingerprints() -> impl Iterator<Item = (usize, u32)> {
     HOOKS
         .iter()
         .chain(GUARDS.iter())
+        .chain(CALLS.iter())
         .filter_map(|entry| entry.word.map(|word| (entry.offset, word)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CC, GUARDS, HOOKS, Purpose, fingerprints};
+    use super::{CALLS, CC, GUARDS, HOOKS, Purpose, fingerprints};
 
     #[test]
     fn every_hook_is_fingerprinted_and_marked_as_a_hook() {
@@ -182,21 +220,35 @@ mod tests {
     }
 
     #[test]
-    fn guards_are_probes_and_no_address_is_listed_twice() {
-        assert!(GUARDS.iter().all(|guard| guard.purpose == Purpose::Probe));
-        let mut offsets: Vec<usize> = HOOKS
-            .iter()
-            .chain(GUARDS.iter())
-            .map(|e| e.offset)
-            .collect();
-        offsets.sort_unstable();
-        offsets.dedup();
-        assert_eq!(offsets.len(), HOOKS.len() + GUARDS.len());
+    fn every_call_is_a_call_or_data_and_only_data_lacks_a_word() {
+        for entry in CALLS {
+            match entry.purpose {
+                Purpose::Call => assert!(entry.word.is_some(), "call at {:#x}", entry.offset),
+                Purpose::Data => assert!(entry.word.is_none(), "data at {:#x}", entry.offset),
+                other => panic!("unexpected {other:?} at {:#x}", entry.offset),
+            }
+        }
     }
 
     #[test]
-    fn the_fingerprint_set_covers_the_original_thirty_eight_words() {
-        assert_eq!(fingerprints().count(), 38);
+    fn no_address_is_listed_twice() {
+        let mut offsets: Vec<usize> = HOOKS
+            .iter()
+            .chain(GUARDS.iter())
+            .chain(CALLS.iter())
+            .map(|entry| entry.offset)
+            .collect();
+        let listed = offsets.len();
+        offsets.sort_unstable();
+        offsets.dedup();
+        assert_eq!(offsets.len(), listed);
+    }
+
+    #[test]
+    fn the_fingerprint_set_covers_every_word_the_tested_image_has() {
+        // Every hook, guard and call with code, checked by `firmware_ok`.
+        let code_entries = HOOKS.len() + GUARDS.len() + CALLS.len() - 1;
+        assert_eq!(fingerprints().count(), code_entries);
         assert!(fingerprints().any(|(offset, word)| offset == CC.offset && word == 0x3940_2003));
     }
 }

@@ -40,11 +40,11 @@ const MAX_FRAMES: usize = 4096;
 static PHASE: AtomicU32 = AtomicU32::new(0);
 
 fn tone_output(frames: &mut [i32], info: &OutputInfo) {
-    if info.channels == 0 {
+    if info.channels() == 0 {
         return;
     }
-    let count = (frames.len() / info.channels).min(MAX_FRAMES);
-    let step = 440.0 / info.rate as f32;
+    let count = (frames.len() / info.channels()).min(MAX_FRAMES);
+    let step = 440.0 / info.rate() as f32;
     let mut phase = f32::from_bits(PHASE.load(Ordering::Relaxed));
     let mut left = [0.0_f32; MAX_FRAMES];
     let mut right = [0.0_f32; MAX_FRAMES];
@@ -56,7 +56,7 @@ fn tone_output(frames: &mut [i32], info: &OutputInfo) {
     }
     PHASE.store(phase.to_bits(), Ordering::Relaxed);
     let planes: [&[f32]; 2] = [&left[..count], &right[..count]];
-    let _ = audio::add_planes_i32(frames, info.channels, &planes);
+    let _ = audio::add_planes_i32(frames, info.channels(), &planes);
 }
 
 #[derive(Default)]
@@ -132,7 +132,7 @@ The calibration trim is available as `audio::extra_latency()` and
 `audio::set_extra_latency(frames)`. This is a UI-side setting; do not change it
 from the audio callback.
 
-The exported two-second output tap and `OutputInfo::output_peak_bits` are only
+The exported two-second output tap and `OutputInfo::output_peak_bits()` are only
 updated for a validated S32 stream with a plausible channel count and
 `written <= requested`. An S16 (or otherwise formatted) stream is forwarded and
 ignored rather than being read as S32.
@@ -142,7 +142,7 @@ ignored rather than being read as S32.
 - `audio::output_buffer()` / `audio::input_buffer()` — ring sizes in frames.
 - `audio::input_delay()` — input backlog.
 - `audio::mark_buffers_stale()` / `audio::buffers_stale()` — geometry cache.
-- `audio::stream_geometry(...)` — unsafe low-level ALSA geometry; most mods
+- `audio::stream_geometry(pcm)` — unsafe low-level ALSA geometry, `None` when the device cannot be queried; most mods
   should use `OutputInfo` instead.
 
 

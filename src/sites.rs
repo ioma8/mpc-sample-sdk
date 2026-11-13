@@ -316,6 +316,11 @@ unsafe extern "C" fn sixteen_proc(app: usize, index: i32, out: usize) {
     }
 }
 
+/// Ask the mod for its decision on one event; forward when no mod is there.
+fn decide(call: impl FnOnce(&mut dyn event::Mod) -> Flow) -> Flow {
+    with_mod(call).unwrap_or(Flow::Forward)
+}
+
 /// The encoder: let the mod decide, then forward.
 ///
 /// # Safety
@@ -323,7 +328,7 @@ unsafe extern "C" fn sixteen_proc(app: usize, index: i32, out: usize) {
 /// The app calls this with its own surface and delta.
 unsafe extern "C" fn data(surface: usize, delta: i32) {
     let event = EncoderEvent { surface, delta };
-    let flow = with_mod(|module| module.on_encoder(event)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_encoder(event));
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -354,7 +359,7 @@ unsafe extern "C" fn note_on(
         properties,
         velocity,
     };
-    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_pad(event));
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -381,7 +386,7 @@ unsafe extern "C" fn surface(surface: usize, code: i32, payload: usize) {
         note: if decoded { raw[1] } else { 0 },
         velocity: if decoded { raw[2] } else { 0 },
     };
-    let flow = with_mod(|module| module.on_surface(event)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_surface(event));
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -406,7 +411,7 @@ unsafe extern "C" fn note_off(input: usize, source: i32, pad: i32) {
         properties: 0,
         velocity: 0.0,
     };
-    let flow = with_mod(|module| module.on_pad(event)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_pad(event));
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -436,7 +441,7 @@ unsafe extern "C" fn cc(event: usize, raw: u32, low: f32, range: f32) {
         low,
         range,
     };
-    let flow = with_mod(|module| module.on_cc(message)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_cc(message));
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -504,7 +509,7 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
         erase: event::erase(),
         surface,
     };
-    let flow = with_mod(|module| module.on_button(message)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_button(message));
     // Track the hold state after the mod has seen the event, so it sees the
     // state that was in effect when the key was pressed.
     if code == event::button::SHIFT {
@@ -589,7 +594,7 @@ unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: us
     };
     // SAFETY: the site supplies the app's own displaced pitch setter.
     let mut message = unsafe { NoteEvent::new(app, context, storage, source as u64, pitch_off) };
-    let flow = with_mod(|module| module.on_note(&mut message)).unwrap_or(Flow::Forward);
+    let flow = decide(|module| module.on_note(&mut message));
     match flow {
         Flow::Forward if message.is_replayed() => {
             // SAFETY: the original is the app's own dispatcher.

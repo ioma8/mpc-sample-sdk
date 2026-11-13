@@ -28,7 +28,7 @@ mpc_sample_sdk::export_mod!(ModType);
 which:
 
 1. finds the app's image,
-2. checks the 38 firmware words,
+2. checks the 59 firmware words,
 3. installs the hook sites,
 4. calls `on_start`.
 
@@ -50,7 +50,23 @@ if base == 0 {
 ```
 
 `loader::find_main()` returns the load address, or zero. `firmware_ok(base)`
-checks all 38 fingerprint words.
+checks all 59 fingerprint words. Every hook, guard and called function is in one
+table (`src/firmware.rs`); the one data entry, the Sample page vtable, is checked
+where it is read, by `page::bind`.
+
+## Checking the table against a binary
+
+`scripts/check-firmware-table.py` reads every fingerprinted word from a firmware
+binary at the table's offsets. Run it on each firmware bump, before the hooks are
+changed:
+
+```bash
+python3 scripts/check-firmware-table.py "usr/bin/MPC Sample"
+```
+
+The binary is `usr/bin/MPC Sample` from the rootfs of the official updater's
+`Update.img` (1.3.0.12: 119,243,440 bytes). The offsets are file offsets, so the
+binary can be read as it is on disk.
 
 ## Manual installation
 

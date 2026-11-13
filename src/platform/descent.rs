@@ -16,15 +16,14 @@ const PAGE_BINDING: usize = 0x178;
 /// `[binding + 0x60]` is the state the instrument lives in.
 const BINDING_STATE: usize = 0x60;
 /// `[state + 0x22e8]` is the layer list.
-const STATE_LAYERS: usize = 0x22e8;
+pub(crate) const STATE_LAYERS_OFFSET: usize = 0x22e8;
 /// `[state + 0x2310]` is the app's program object.
 const STATE_PROGRAM: usize = 0x2310;
 /// `[layers + 0x4a8]` is the slot holding the selected sample.
-const LAYERS_SAMPLE: usize = LAYERS_SAMPLE_OFFSET;
 /// The layers offset of the selected-sample slot, for layouts that reach past it.
 pub(crate) const LAYERS_SAMPLE_OFFSET: usize = 0x4a8;
 /// `[sample + 0x130]` is its metadata block.
-const SAMPLE_METADATA: usize = 0x130;
+pub(crate) const SAMPLE_METADATA_OFFSET: usize = 0x130;
 /// Shortest and longest sample rate the app accepts.
 pub(crate) const RATE_RANGE: RangeInclusive<u32> = 8_000..=192_000;
 
@@ -66,7 +65,7 @@ impl State {
 
     /// The layer list.
     pub(crate) fn layers(self) -> Option<Layers> {
-        image::read_pointer(self.0.checked_add(STATE_LAYERS)?).map(Layers)
+        image::read_pointer(self.0.checked_add(STATE_LAYERS_OFFSET)?).map(Layers)
     }
 
     /// The program object, when the app has one.
@@ -92,7 +91,7 @@ impl Layers {
 
     /// The address of the slot that holds the selected sample.
     pub(crate) fn sample_slot(self) -> Option<usize> {
-        self.0.checked_add(LAYERS_SAMPLE)
+        self.0.checked_add(LAYERS_SAMPLE_OFFSET)
     }
 
     /// The selected sample object.
@@ -103,7 +102,7 @@ impl Layers {
 
 /// The address of a sample's metadata block: `{u16 channels, u32 frames, u32 rate}`.
 pub(crate) fn metadata_block(sample: usize) -> Option<usize> {
-    image::read_pointer(sample.checked_add(SAMPLE_METADATA)?)
+    image::read_pointer(sample.checked_add(SAMPLE_METADATA_OFFSET)?)
 }
 
 /// A sample's geometry, for the samples the SDK accepts.
@@ -134,7 +133,8 @@ pub(crate) fn geometry(sample: usize) -> Option<Geometry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, RATE_RANGE, SAMPLE_METADATA, geometry};
+    use super::{Geometry, Page, RATE_RANGE, SAMPLE_METADATA_OFFSET, geometry};
+    use crate::firmware;
     use crate::image::test_memory;
 
     /// Fixture regions for one sample whose metadata reads `channels`, `frames`
@@ -143,7 +143,10 @@ mod tests {
         let sample: usize = 0x0010_0000;
         let metadata: usize = 0x0020_0000;
         let regions = vec![
-            (sample + SAMPLE_METADATA, metadata.to_le_bytes().to_vec()),
+            (
+                sample + SAMPLE_METADATA_OFFSET,
+                metadata.to_le_bytes().to_vec(),
+            ),
             (metadata, channels.to_le_bytes().to_vec()),
             (metadata + 4, frames.to_le_bytes().to_vec()),
             (metadata + 8, rate.to_le_bytes().to_vec()),
@@ -178,5 +181,45 @@ mod tests {
             let (sample, regions) = sample_with(channels, frames, rate);
             assert_eq!(test_memory::with(regions, || geometry(sample)), None);
         }
+    }
+
+    #[test]
+    fn a_sample_page_leads_to_its_selected_sample_and_geometry() {
+        let screen: usize = 0x0050_0000;
+        let binding: usize = 0x0051_0000;
+        let state: usize = 0x0052_0000;
+        let layers: usize = 0x0053_0000;
+        let sample: usize = 0x0054_0000;
+        let metadata: usize = 0x0055_0000;
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (screen, pointer(firmware::SAMPLE_PAGE_VTABLE.offset)),
+            (screen + super::PAGE_BINDING, pointer(binding)),
+            (binding + super::BINDING_STATE, pointer(state)),
+            (state + super::STATE_LAYERS_OFFSET, pointer(layers)),
+            (layers + super::LAYERS_SAMPLE_OFFSET, pointer(sample)),
+            (sample + SAMPLE_METADATA_OFFSET, pointer(metadata)),
+            (metadata, 2_u32.to_le_bytes().to_vec()),
+            (metadata + 4, 44_100_u32.to_le_bytes().to_vec()),
+            (metadata + 8, 48_000_u32.to_le_bytes().to_vec()),
+        ];
+        let walked = test_memory::with(regions, || {
+            let page = Page::bind(screen)?;
+            let state = page.state()?;
+            let sample = state.layers()?.sample()?;
+            Some((state.address(), sample, geometry(sample)?))
+        });
+        assert_eq!(
+            walked,
+            Some((
+                state,
+                sample,
+                Geometry {
+                    channels: 2,
+                    frames: 44_100,
+                    rate: 48_000,
+                },
+            ))
+        );
     }
 }

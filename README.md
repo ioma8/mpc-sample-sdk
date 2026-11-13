@@ -31,7 +31,7 @@ See [the hands-on guide](docs/README.md) and the
 
 It owns everything that is not a feature:
 
-* **Firmware** — find the loaded app, verify the 38 fingerprint words, and map
+* **Firmware** — find the loaded app, verify the 59 fingerprint words, and map
   the image (`image`, `loader`).
 * **Native sample seed** — create a silent, app-owned stereo sample in memory
   for Extract when no pad provides a source. The SDK retains one seed for the
@@ -54,7 +54,7 @@ It owns everything that is not a feature:
 
 ## Local development changes
 
-The current checkout exposes hardware identifiers in `event::button` and `event::cc`, named pad and trim operations in `platform::control`, and generated-audio extraction in `platform::extract::generated`. Raw control operations remain available. Seed borrowing and firmware object mutations require the live objects on their UI thread. `trim::edges` accepts its threshold explicitly and no longer reads a minimod-specific environment variable.
+The current checkout exposes hardware identifiers in `event::button` and `event::cc`, named pad and trim operations in `platform::control`, and generated-audio extraction in `platform::extract::Source::Generated`. Raw control operations remain available. Seed borrowing and firmware object mutations require the live objects on their UI thread. `trim::edges` accepts its threshold explicitly and no longer reads a minimod-specific environment variable.
 
 ## Install
 
