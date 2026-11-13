@@ -27,7 +27,7 @@ sample whose geometry does not validate.
 
 ## Reading the audio
 
-`Selection::read_audio` is the normal way to get samples:
+`Selection::read_current` is the normal way to get samples:
 
 ```rust
 use mpc_sample_sdk::platform::selection;
@@ -36,7 +36,7 @@ fn copy_selected_audio() -> Option<Vec<f32>> {
     let screen = mpc_sample_sdk::platform::page::screen();
     // SAFETY: `screen` is the live Sample page recorded by the paint hook.
     let selected = unsafe { selection::current(screen) }?;
-    match selected.read_audio() {
+    match selected.read_current() {
         Ok(audio) => Some(audio),
         Err(error) => {
             mpc_sample_sdk::platform::status::set_status(&format!("{error:?}"));
@@ -49,6 +49,11 @@ fn copy_selected_audio() -> Option<Vec<f32>> {
 It prefers the app's in-memory float buffer and falls back to the exact WAV file
 for a streamed sample. The returned vector is interleaved `f32`, length
 `frames * channels`.
+
+`read_current` checks that the selection is still current before and after the
+copy, and returns `AudioReadError::Stale` when it cannot confirm it. A read taken
+while the page is hidden or the sample has changed is refused rather than
+returned.
 
 ## Checking that a source is still valid
 

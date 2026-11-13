@@ -20,7 +20,7 @@ struct Diagnostic;
 impl Mod for Diagnostic {
     fn on_start(&mut self) {
         let base = mpc_sample_sdk::loader::find_main();
-        let notes = mpc_sample_sdk::sites::notes_ready();
+        let notes = mpc_sample_sdk::midi::notes_ready();
         let screen = mpc_sample_sdk::platform::page::screen();
         mpc_sample_sdk::platform::status::set_status(&format!(
             "base {base:#x} notes {notes} screen {screen:#x}"

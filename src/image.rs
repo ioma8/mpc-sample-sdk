@@ -45,7 +45,7 @@ impl Firmware {
     /// life of the process, as [`Self::find`] establishes.  Every address
     /// derived from this handle is called or read as firmware.
     #[must_use]
-    pub const unsafe fn from_base(base: usize) -> Self {
+    pub(crate) const unsafe fn from_base(base: usize) -> Self {
         Self { base }
     }
 

@@ -4,43 +4,14 @@
 //! helpers instead of raw pointer arithmetic in the glue.  The offsets are the
 //! reverse-engineered ones and change with the firmware.
 
+use super::descent;
 use crate::image;
-
-/// `[sample + 0x130]` is the sample's metadata block.
-const SAMPLE_METADATA: usize = 0x130;
-/// Shortest and longest sample rate the app accepts.
-const RATE_RANGE: core::ops::RangeInclusive<u32> = 8_000..=192_000;
 
 /// The frame count of the sample object, or zero when its metadata is not a
 /// usable sample description.
 #[must_use]
 pub fn frames(sample: usize) -> u32 {
-    if sample == 0 {
-        return 0;
-    }
-    let Some(metadata) = sample
-        .checked_add(SAMPLE_METADATA)
-        .and_then(image::read_pointer)
-    else {
-        return 0;
-    };
-    let Some(channels) = image::read_u32(metadata) else {
-        return 0;
-    };
-    let Ok(channels) = u16::try_from(channels & 0xffff) else {
-        return 0;
-    };
-    if channels != 1 && channels != 2 {
-        return 0;
-    }
-    let (Some(frames), Some(rate)) = (image::read_u32(metadata + 4), image::read_u32(metadata + 8))
-    else {
-        return 0;
-    };
-    if !RATE_RANGE.contains(&rate) {
-        return 0;
-    }
-    frames
+    descent::geometry(sample).map_or(0, |geometry| geometry.frames)
 }
 
 /// `[sample + 0x170]` is the object that holds the audio in memory.
@@ -103,7 +74,7 @@ fn class_is(object: usize, want: &str) -> bool {
 /// caller falls back to the WAV.
 #[must_use]
 pub fn memory(sample: usize) -> Option<Memory> {
-    let metadata = image::read_pointer(sample.checked_add(SAMPLE_METADATA)?)?;
+    let metadata = descent::metadata_block(sample)?;
     let holder = image::read_pointer(sample.checked_add(SAMPLE_HOLDER)?)?;
     if !class_is(holder, "MemorySample") {
         return None;
@@ -126,7 +97,7 @@ pub fn memory(sample: usize) -> Option<Memory> {
     }
     let rate = u32::try_from(rate)
         .ok()
-        .filter(|rate| RATE_RANGE.contains(rate))?;
+        .filter(|rate| descent::RATE_RANGE.contains(rate))?;
     Some(Memory {
         buffer,
         frames: u32::try_from(frames).ok()?,
@@ -167,9 +138,7 @@ impl Memory {
 /// kick has root 88 and most others 60.
 #[must_use]
 pub fn root_note(sample: usize) -> i32 {
-    sample
-        .checked_add(SAMPLE_METADATA)
-        .and_then(image::read_pointer)
+    descent::metadata_block(sample)
         .and_then(|metadata| metadata.checked_add(METADATA_ROOT))
         .and_then(image::read_u32)
         .map(u32::cast_signed)
@@ -184,7 +153,7 @@ pub fn geometry(sample: usize) -> Option<(u32, u16, u32)> {
     if frames == 0 {
         return None;
     }
-    let metadata = image::read_pointer(sample.checked_add(SAMPLE_METADATA)?)?;
+    let metadata = descent::metadata_block(sample)?;
     let channels = u16::try_from(image::read_u32(metadata)? & 0xffff).ok()?;
     let rate = image::read_u32(metadata.checked_add(8)?)?;
     Some((frames, channels, rate))
@@ -294,7 +263,7 @@ fn build_seed() -> Option<Seed> {
 
 #[cfg(test)]
 mod tests {
-    use super::RATE_RANGE;
+    use super::descent;
 
     #[test]
     fn a_seed_is_unavailable_without_the_app_service() {
@@ -303,10 +272,10 @@ mod tests {
 
     #[test]
     fn the_rate_range_matches_the_app() {
-        assert!(RATE_RANGE.contains(&44_100));
-        assert!(RATE_RANGE.contains(&8_000));
-        assert!(RATE_RANGE.contains(&192_000));
-        assert!(!RATE_RANGE.contains(&7_999));
-        assert!(!RATE_RANGE.contains(&192_001));
+        assert!(descent::RATE_RANGE.contains(&44_100));
+        assert!(descent::RATE_RANGE.contains(&8_000));
+        assert!(descent::RATE_RANGE.contains(&192_000));
+        assert!(!descent::RATE_RANGE.contains(&7_999));
+        assert!(!descent::RATE_RANGE.contains(&192_001));
     }
 }

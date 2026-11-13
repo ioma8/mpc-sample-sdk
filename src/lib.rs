@@ -37,7 +37,7 @@ pub mod loader;
 pub mod midi;
 pub mod platform;
 pub mod render;
-pub mod sites;
+mod sites;
 pub mod state;
 pub mod task;
 

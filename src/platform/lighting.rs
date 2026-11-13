@@ -100,7 +100,7 @@ fn send(pad: u8, light: u64) -> bool {
     if sender == 0 {
         return false;
     }
-    crate::sites::send_light(sender, light, pad)
+    forward_light(sender, light, pad)
 }
 
 /// The native sender object, or zero before the app has sent a colour.
@@ -128,6 +128,18 @@ pub(crate) fn override_light(pad: u8) -> Option<u64> {
     }
     let value = OVERRIDES[index].load(Ordering::Acquire);
     (value != NONE).then_some(value)
+}
+
+/// Send one already-packed `PadLight` through the original callback.
+fn forward_light(sender: usize, light: u64, pad: u8) -> bool {
+    // SAFETY: site 17 is the installed lighting callback.
+    let Some(forward) = crate::sites::originals().lighting else {
+        return false;
+    };
+    let mut light = light;
+    // SAFETY: the original callback converts and sends this live `PadLight`.
+    unsafe { forward(sender, core::ptr::from_mut(&mut light), pad) };
+    true
 }
 
 #[cfg(test)]

@@ -23,8 +23,6 @@ const RANGE_START: usize = 0x78;
 const RANGE_END: usize = 0xd0;
 /// The app's Extract handler.
 const EXTRACT_HANDLER: usize = crate::firmware::EXTRACT_HANDLER.offset;
-/// `[state + 0x2310]` is the app's program object.
-const STATE_PROGRAM: usize = 0x2310;
 /// `juce::String(const char *)`.
 const STRING_FROM_C: usize = crate::firmware::STRING_FROM_C.offset;
 
@@ -121,7 +119,33 @@ struct Operation {
     wrote: AtomicBool,
 }
 static OPERATION: Mutex<Option<Arc<Operation>>> = Mutex::new(None);
-static RUN: Mutex<()> = Mutex::new(());
+/// Whether an extraction is in flight: set from the moment a request is accepted
+/// until it returns, on any thread.
+static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Holds [`IN_FLIGHT`] for one request.
+struct Flight;
+
+impl Flight {
+    fn enter() -> Result<Self, ExtractError> {
+        IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| ExtractError::NotApplied)
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+/// Whether an extraction is running on any thread.
+#[must_use]
+pub fn in_flight() -> bool {
+    IN_FLIGHT.load(Ordering::Acquire)
+}
 static EXECUTION: Mutex<()> = Mutex::new(());
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -129,11 +153,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The app's own command constructor.
-static mut ORIGINAL_CTOR: Option<
-    unsafe extern "C" fn(usize, usize, i32, usize, usize, usize, usize, usize, usize),
-> = None;
+pub(crate) type Constructor =
+    unsafe extern "C" fn(usize, usize, i32, usize, usize, usize, usize, usize, usize);
 /// The app's own command method.
-static mut ORIGINAL_EXEC: Option<unsafe extern "C" fn(usize) -> i32> = None;
+pub(crate) type Command = unsafe extern "C" fn(usize) -> i32;
+
+/// The app's own command constructor.
+static mut ORIGINAL_CTOR: Option<Constructor> = None;
+/// The app's own command method.
+static mut ORIGINAL_EXEC: Option<Command> = None;
 // Native names are process-lived because the firmware may retain them. Key by
 // content rather than address, and do not impose an arbitrary lifetime limit.
 static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
@@ -143,19 +171,11 @@ static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
 /// # Safety
 ///
 /// Called once, before the hooks can run.
-pub(crate) unsafe fn record(constructor: usize, execute: usize) {
+pub(crate) unsafe fn record(constructor: Option<Constructor>, execute: Option<Command>) {
     // SAFETY: the caller's contract.
     unsafe {
-        ORIGINAL_CTOR = if constructor == 0 {
-            None
-        } else {
-            Some(core::mem::transmute_copy::<usize, _>(&constructor))
-        };
-        ORIGINAL_EXEC = if execute == 0 {
-            None
-        } else {
-            Some(core::mem::transmute_copy::<usize, _>(&execute))
-        };
+        ORIGINAL_CTOR = constructor;
+        ORIGINAL_EXEC = execute;
     }
 }
 
@@ -381,7 +401,7 @@ fn write_u64(address: usize, value: u64) -> bool {
 /// Returns [`ExtractError`] when the request is unusable, the page has no
 /// program, or the app did not assign a pad.
 pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
-    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
+    let _flight = Flight::enter()?;
     // SAFETY: forwarded from this function's caller.
     unsafe { run_inner(request, false) }
 }
@@ -415,18 +435,9 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     {
         return Err(ExtractError::NotApplied);
     }
-    let Some(program) = image::read_u64(
-        request
-            .state
-            .checked_add(STATE_PROGRAM)
-            .ok_or(ExtractError::Invalid)?,
-    ) else {
+    let Some(program) = super::descent::State::at(request.state).program() else {
         return Err(ExtractError::NoProgram);
     };
-    let program = usize::try_from(program).unwrap_or(0);
-    if program == 0 {
-        return Err(ExtractError::NoProgram);
-    }
     // SAFETY: the request contract supplies the live program.
     let before = unsafe { pads::free_count(program) };
     if before < 0 {
@@ -539,7 +550,7 @@ pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractErr
 /// Returns an error if the seed cannot be borrowed or the extraction fails.
 pub(crate) unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
     let destination = request.destination.ok_or(ExtractError::Invalid)?;
-    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
+    let _flight = Flight::enter()?;
     if lock(&OPERATION)
         .as_ref()
         .is_some_and(|operation| !operation.finished.load(Ordering::Acquire))

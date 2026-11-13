@@ -129,15 +129,16 @@ src/draw.rs         Graphics, the toast, the screen and the repaint pump
 src/midi.rs         NoteEvent and replay
 src/task.rs         the generic one-shot worker
 src/render.rs       RenderJob, RenderOutput and source metadata
-src/platform/       page, sample, pads, slices, trim, WAV, paths, status,
-                    clock, writer, control, effect, extract
+src/platform/       page, descent (the Sample page's object graph), selection,
+                    sample, pads, slices, trim, WAV, paths, status, clock,
+                    writer, control, effect, extract
 ```
 
 ## Vocabulary
 
 | term | meaning |
 |---|---|
-| **Selection** | The exact Sample-page source: screen, page state, sample, frames, channels and rate. `Selection::is_current()` answers “is this still the visible selection?”; `read_audio()` loads the app buffer first, then the WAV. |
+| **Selection** | The exact Sample-page source: screen, page state, sample, frames, channels and rate. `Selection::is_current()` answers “is this still the visible selection?”; `read_current()` revalidates the selection, loads the app buffer first, then the WAV. |
 | **Task** | One generic one-shot worker: it owns a value, moves it to a named thread, catches a panic when the runtime unwinds, and hands the value back once through `take()`. |
 | **RenderJob** | One audio request: a `Selection`, a feature-defined `kind`, interleaved input and the `RenderOutput` buffers the backend fills. |
 | **RenderOutput** | One interleaved f32 buffer plus its frame and channel geometry. |

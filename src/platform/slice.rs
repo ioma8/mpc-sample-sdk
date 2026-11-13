@@ -7,8 +7,6 @@
 
 use crate::image;
 
-/// `[sample + 0x130]` is the sample's metadata block.
-const SAMPLE_METADATA: usize = 0x130;
 /// `[metadata + 0x70..0x80]` is the slice vector: begin, end, capacity.
 const SLICES_BEGIN: usize = 0x70;
 const SLICES_END: usize = 0x78;
@@ -39,7 +37,7 @@ pub fn slice_count(sample: usize) -> Option<Slices> {
     if sample == 0 {
         return None;
     }
-    let metadata = image::read_pointer(sample.checked_add(SAMPLE_METADATA)?)?;
+    let metadata = super::descent::metadata_block(sample)?;
     let begin = image::read_pointer(metadata.checked_add(SLICES_BEGIN)?)?;
     let end = image::read_pointer(metadata.checked_add(SLICES_END)?)?;
     let capacity = image::read_pointer(metadata.checked_add(SLICES_CAPACITY)?)?;
@@ -261,13 +259,10 @@ pub fn chop_kind(screen: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_SLICES, SAMPLE_METADATA, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions,
-    };
+    use super::{MAX_SLICES, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions};
 
     #[test]
     fn the_object_layout_matches_the_reverse_engineering() {
-        assert_eq!(SAMPLE_METADATA, 0x130);
         assert_eq!(SLICE_BYTES, 8);
         assert_eq!(MAX_SLICES, 128);
         assert_eq!(SLICE_START, 0x78);

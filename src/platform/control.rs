@@ -34,8 +34,11 @@ const IMAGE_SPAN: usize = 0x1200_0000;
 /// # Safety
 ///
 /// Called once, before the hook can run.
-pub unsafe fn record(original: usize) {
-    ORIGINAL.store(original, Ordering::Release);
+pub(crate) unsafe fn record(original: Option<SetControl>) {
+    ORIGINAL.store(
+        original.map_or(0, |setter| setter as usize),
+        Ordering::Release,
+    );
 }
 
 /// The app's setter, as a hook: learn the live surface, then pass the call on.

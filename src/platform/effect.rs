@@ -355,16 +355,11 @@ pub fn render_code(
         .map(|rendered| rendered.audio)
 }
 
-/// Render through a specific image handle, for advanced callers.
+/// Render through a specific image handle.
 ///
-/// A [`Firmware`] value is only constructible from [`Firmware::find`] or from an
-/// unsafe, verified-base call, so this safe function never calls through an
-/// unauthenticated address.
-///
-/// # Errors
-///
-/// Returns [`EffectError`] for the same reasons as [`render`].
-pub fn render_at(
+/// Crate-internal: a [`Firmware`] value comes only from [`Firmware::find`], so the
+/// public entry points never take an unauthenticated address.
+pub(crate) fn render_at(
     firmware: Firmware,
     effect: Effect,
     input: &[f32],
@@ -378,7 +373,7 @@ pub fn render_at(
     if !(1..=2).contains(&channels) {
         return Err(EffectError::UnsupportedChannels);
     }
-    if !(8_000..=192_000).contains(&rate) {
+    if !super::descent::RATE_RANGE.contains(&rate) {
         return Err(EffectError::UnsupportedRate);
     }
     if !input.len().is_multiple_of(channels) {

@@ -50,7 +50,7 @@ impl Renderer {
             self.status = "no sample";
             return;
         };
-        let Ok(input) = selected.read_audio() else {
+        let Ok(input) = selected.read_current() else {
             self.status = "cannot read audio";
             return;
         };

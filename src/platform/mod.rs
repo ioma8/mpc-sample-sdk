@@ -6,6 +6,7 @@
 
 pub mod clock;
 pub mod control;
+pub(crate) mod descent;
 pub mod effect;
 pub mod extract;
 pub mod lighting;

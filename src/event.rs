@@ -300,3 +300,40 @@ pub(crate) fn set_shift(held: bool) {
 pub(crate) fn set_erase(held: bool) {
     ERASE.store(held, core::sync::atomic::Ordering::Release);
 }
+
+/// The app's own button dispatcher, for a mod that replays an event.
+#[must_use]
+fn buttons_original() -> Option<unsafe extern "C" fn(usize)> {
+    // SAFETY: written once at install.
+    crate::sites::originals().buttons
+}
+
+/// Replay one key press/release on a captured button event.
+///
+/// Returns false when no event was captured or the button hook is missing.
+///
+/// # Safety
+///
+/// `event` must be the first 16 bytes of a button event captured during the
+/// current callback, whose context and surface are still live.  Replaying it
+/// later would dereference a stale app object.
+#[must_use]
+pub unsafe fn replay_button(event: &[u8; 16], key: u8) -> bool {
+    let Some(original) = buttons_original() else {
+        return false;
+    };
+    // A blank event has no context pointer; replaying it would dereference zero.
+    if event[..8] == [0; 8] {
+        return false;
+    }
+    let mut bytes = *event;
+    bytes[8] = key;
+    bytes[9] = 0x7f;
+    // SAFETY: the captured event is the app's own and the original is its own
+    // dispatcher.
+    unsafe { original(bytes.as_ptr() as usize) };
+    bytes[9] = 0;
+    // SAFETY: as above.
+    unsafe { original(bytes.as_ptr() as usize) };
+    true
+}

@@ -60,26 +60,27 @@ should apply.
 
 ## Low-level sites
 
-`sites` wraps the displaced app functions. They are unsafe because each takes an
-app object that must still be live, and they bypass the normal event flow:
+The displaced app functions are private to the SDK. The few calls a mod may
+need live with the concept they act on. Each takes an app object that must still
+be live, and they bypass the normal event flow:
 
 ```rust
-use mpc_sample_sdk::sites;
+use mpc_sample_sdk::{draw, midi};
 
 // SAFETY: `screen` is the live Sample page recorded by the paint hook.
-unsafe { sites::repaint_component(mpc_sample_sdk::platform::page::screen()) };
+unsafe { draw::repaint_component(mpc_sample_sdk::platform::page::screen()) };
 
 // Are the note hooks installed?
-let ready = sites::notes_ready();
+let ready = midi::notes_ready();
 
 // SAFETY: `input` must be the app's live input object; `0` is a placeholder.
-unsafe { sites::send_note_off(0, 0, 4) };
+unsafe { midi::send_note_off(0, 0, 4) };
 let _ = ready;
 ```
 
-`replay_button` is in [Buttons](02-buttons.md). `repaint_function` and the
-`*_original` accessors are for diagnostics; they expose the app's own function
-pointers and should not be stored by feature code.
+`event::replay_button` is in [Buttons](02-buttons.md). `draw::repaint_function`
+returns the app's own repaint pointer for diagnostics; it should not be stored by
+feature code.
 
 The buffer substitution behind [Extract](13-extract.md) is internal to the SDK.
 `extract::run` arms and clears it for you, and no feature code can reach it: a

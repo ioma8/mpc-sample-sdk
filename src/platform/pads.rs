@@ -18,9 +18,6 @@ const MAX_PADS: usize = 128;
 /// `[surface + 0x2808]` is the first pad state, `+0x2810` the last.
 const SURFACE_PADS: usize = 0x2808;
 const SURFACE_PADS_END: usize = 0x2810;
-/// `[pad state + 0x22e8]` is the layer list, `[layers + 0x4a8]` its sample.
-const STATE_LAYERS: usize = 0x22e8;
-const LAYER_SAMPLE: usize = 0x4a8;
 /// `InstrumentLayer::active`, confirmed in the firmware's native serializer.
 const LAYER_ACTIVE: usize = 0xb18;
 
@@ -74,7 +71,11 @@ pub unsafe fn free_estimate(program: usize) -> usize {
     let count = ((last - first) / 8).min(MAX_PADS);
     let mut free = 0;
     for index in 0..count {
-        let Some(state) = image::read_pointer(first + index * 8) else {
+        // A null slot is an empty pad, not the end of the table.
+        let Some(state) = image::read_u64(first + index * 8) else {
+            break;
+        };
+        let Ok(state) = usize::try_from(state) else {
             break;
         };
         if state == 0 {
@@ -109,7 +110,9 @@ fn layer_for_pad(surface: usize, pad: i32) -> Option<usize> {
     if state == 0 {
         return None;
     }
-    image::read_pointer(state.checked_add(STATE_LAYERS)?)
+    super::descent::State::at(state)
+        .layers()
+        .map(super::descent::Layers::address)
 }
 
 /// The pad whose state is `state`, read through the surface's own tables.
@@ -165,7 +168,9 @@ pub fn pad_for_sample(surface: usize, sample: usize) -> Option<i32> {
 #[must_use]
 pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
     let layer = layer_for_pad(surface, pad)?;
-    image::read_pointer(layer.checked_add(LAYER_SAMPLE)?).filter(|sample| *sample != 0)
+    super::descent::Layers::at(layer)
+        .sample()
+        .filter(|sample| *sample != 0)
 }
 
 /// Enable or disable a populated pad's sample layer.
@@ -182,7 +187,7 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
     let Some(layer) = layer_for_pad(surface, pad) else {
         return false;
     };
-    let Some(sample_address) = layer.checked_add(LAYER_SAMPLE) else {
+    let Some(sample_address) = super::descent::Layers::at(layer).sample_slot() else {
         return false;
     };
     if image::read_pointer(sample_address).is_none_or(|sample| sample == 0) {
@@ -217,5 +222,25 @@ mod tests {
     fn the_offsets_are_the_documented_ones() {
         assert_eq!(PAD_STATES, 0x2808);
         assert_eq!(MAX_PADS, 128);
+    }
+
+    #[test]
+    fn free_estimate_counts_the_empty_pad_slots_of_a_program() {
+        use crate::image::test_memory;
+        // A program whose pad table holds three empty slots.
+        let program: usize = 0x0030_0000;
+        let table: usize = 0x0040_0000;
+        let regions = vec![
+            (program + PAD_STATES, table.to_le_bytes().to_vec()),
+            (
+                program + PAD_STATES + 8,
+                (table + 24).to_le_bytes().to_vec(),
+            ),
+            (table, vec![0_u8; 24]),
+        ];
+        // SAFETY: the fixture stands in for the program; no native call is made,
+        // because every slot is empty.
+        let free = test_memory::with(regions, || unsafe { super::free_estimate(program) });
+        assert_eq!(free, 3);
     }
 }

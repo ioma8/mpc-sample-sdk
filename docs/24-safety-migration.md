@@ -16,14 +16,16 @@ no `unsafe`; only the firmware boundary does.
 | API | Change | Why |
 | --- | --- | --- |
 | `image::write` | now `unsafe` | a kernel write does not establish Rust aliasing or object validity |
-| `Firmware::from_base` | now `unsafe` | a number is not an authenticated firmware image; use `Firmware::find` |
+| `Firmware::from_base` | removed from the public API | a number is not an authenticated firmware image; use `Firmware::find` |
 | `pads::free_count`, `pads::free_estimate`, `pads::has_room` | now `unsafe` | each calls the app's own predicate with a caller-supplied program |
 | `selection::current` | now `unsafe` | calls the page predicate with a caller-supplied screen |
-| `Selection` fields | private; use `screen()`, `state()`, `sample()`, `frames()`, `channels()`, `rate()` | only `current` or the unsafe `from_parts` can construct a validated selection |
-| `Selection::from_parts` | new `unsafe` constructor | explicit synthetic source for synth actions that have no selected sample |
+| `Selection` fields | private; use `screen()`, `state()`, `sample()`, `frames()`, `channels()`, `rate()` | only `selection::current` can construct a validated selection |
+| `Selection::from_parts` | removed | no SDK caller; a synth action that needs no sample uses `selection::page_state` |
+| `Selection::read_audio` | renamed `read_current` | it revalidates the selection before and after the copy and returns `AudioReadError::Stale` |
 | `pads::set_layer_active` | now `unsafe` | writes a live native layer and requires exclusive access |
 | `slice::write_markers`, `slice::set_manual` | now `unsafe` | drive the app's native Reset/Insert and binding callbacks |
-| `sites::repaint_component`, `sites::replay_button`, `sites::send_note_on`, `sites::send_note_off` | now `unsafe` | take a component, event or input object that must still be live |
+| `draw::repaint_component`, `event::replay_button`, `midi::send_note_on`, `midi::send_note_off` | now `unsafe` | take a component, event or input object that must still be live |
+| `sites` module | now private | the displaced app functions are no longer public; use the owning module's calls |
 | `Graphics::colour`, `Graphics::rect`, `Graphics::text` | now `unsafe` | the handle must be the live app Graphics on the UI thread |
 | `draw::start_repaint_pump` | now `unsafe` | the supplied function must return a live component on every tick |
 | `draw::toast_text` | returns `Vec<u8>` | the old `&'static [u8]` aliased storage a later toast overwrites |

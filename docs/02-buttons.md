@@ -77,7 +77,7 @@ impl Mod for Replay {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             // SAFETY: `event` was captured in this callback, so its context and
             // surface are still live while we replay it.
-            let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
+            let _ = unsafe { mpc_sample_sdk::event::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
         }
         Flow::Forward
     }

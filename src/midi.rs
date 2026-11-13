@@ -284,6 +284,58 @@ impl<'event> NoteEvent<'event> {
     }
 }
 
+/// Send a note-on through the app's own input path.
+///
+/// Returns false when the note hook is not installed.
+///
+/// This bypasses the mod's pad policy and is intended for a controlled internal
+/// selection, followed by [`send_note_off`].
+///
+/// # Safety
+///
+/// `input` and `properties` must be the app's live input objects on their owning
+/// UI thread, and `source`/`pad`/`velocity` must be valid for the firmware.
+#[must_use]
+pub unsafe fn send_note_on(
+    input: usize,
+    source: i32,
+    pad: i32,
+    properties: usize,
+    velocity: f32,
+) -> bool {
+    // SAFETY: the original is the app's own note-on handler.
+    if let Some(forward) =
+        // SAFETY: the pointer is the app's displaced note-on entry.
+        crate::sites::originals().note_on
+    {
+        // SAFETY: the app's own call.
+        unsafe { forward(input, source, pad, properties, velocity) };
+        true
+    } else {
+        false
+    }
+}
+
+/// Send a note-off through the app's own input path.
+///
+/// # Safety
+///
+/// `input` must be the app's live input object on its owning UI thread, and
+/// `source`/`pad` must identify the note-on this releases.
+pub unsafe fn send_note_off(input: usize, source: i32, pad: i32) {
+    // SAFETY: the original is the app's own handler.
+    if let Some(forward) = crate::sites::originals().note_off {
+        // SAFETY: the app's own call.
+        unsafe { forward(input, source, pad) };
+    }
+}
+
+/// Whether both note hooks are installed.
+#[must_use]
+pub fn notes_ready() -> bool {
+    crate::sites::notes_ready()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -71,8 +71,8 @@ advanced diagnostics.
 `image::write` is unsafe: a successful kernel write does not establish Rust
 aliasing safety or firmware object validity. The caller must establish exclusive
 access and preserve the target object’s invariants. `Firmware::from_base` is
-unsafe and only represents an address; it does not authenticate firmware or
-authorize calls. Use `Firmware::find`, which checks the unnamed image covering
+crate-internal: it only represents an address and does not authenticate firmware
+or authorize calls. Use `Firmware::find`, which checks the unnamed image covering
 the tested firmware's probe offset.
 
 Hook installation is two phase. `hook::prepare` writes the relay slots and
