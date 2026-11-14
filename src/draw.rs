@@ -10,21 +10,21 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::image::{self, TextBox};
 
 /// `setColour(uint32_t)`.
-const SET_COLOUR: usize = 0x102_d5e0;
+const SET_COLOUR: usize = crate::firmware::SET_COLOUR.offset;
 /// `fillRect(int, int, int, int)`.
-const FILL_RECT: usize = 0x102_e000;
+const FILL_RECT: usize = crate::firmware::FILL_RECT.offset;
 /// `String(const char *)`.
-const STRING_FROM_C: usize = 0x0f5_35c0;
+const STRING_FROM_C: usize = crate::firmware::STRING_FROM_C.offset;
 /// `Font(int, float)`.
-const FONT: usize = 0x108_2810;
+const FONT: usize = crate::firmware::FONT.offset;
 /// `setFont(const Font &)`.
-const SET_FONT: usize = 0x102_dca0;
+const SET_FONT: usize = crate::firmware::SET_FONT.offset;
 /// `drawText(const String &, int, int, int, int, int, int, float)`.
-const DRAW_TEXT: usize = 0x108_17b0;
+const DRAW_TEXT: usize = crate::firmware::DRAW_TEXT.offset;
 /// `Font::~Font()`.
-const FONT_DROP: usize = 0x107_0d60;
+const FONT_DROP: usize = crate::firmware::FONT_DROP.offset;
 /// `String::~String()`.
-const STRING_DROP: usize = 0x0f0_a290;
+const STRING_DROP: usize = crate::firmware::STRING_DROP.offset;
 
 /// A live `Graphics` object the app is painting with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,7 +243,7 @@ pub fn show_toast(text: &str) {
     // SAFETY: the buffer is NUL-terminated and lives for the call; `repaint`
     // is the app's own repaint and `component` is on the current page.
     unsafe {
-        toast_line(line.as_ptr(), crate::sites::repaint_function(), component);
+        toast_line(line.as_ptr(), repaint_function(), component);
     }
 }
 
@@ -276,7 +276,7 @@ pub fn repaint_painted() {
     let component = if painted != 0 { painted } else { screen() };
     // SAFETY: the paint hook recorded this live component, and the page stays
     // alive while the mod handles a UI callback.
-    unsafe { crate::sites::repaint_component(component) };
+    unsafe { repaint_component(component) };
 }
 
 /// Start a steady repaint pump once.
@@ -302,10 +302,33 @@ pub unsafe fn start_repaint_pump(component: fn() -> usize) {
                 if component != 0 {
                     // SAFETY: the caller's function returns live components, or
                     // zero which is skipped.
-                    unsafe { crate::sites::repaint_component(component) };
+                    unsafe { repaint_component(component) };
                 }
             }
         });
+}
+
+/// The app's own repaint, for a mod that needs to call it directly.
+#[must_use]
+pub fn repaint_function() -> Option<Repaint> {
+    // SAFETY: the original is the app's own repaint.
+    crate::sites::originals().repaint
+}
+
+/// Ask the app to repaint one component.
+///
+/// # Safety
+///
+/// `component` must be a live component on its owning UI thread.
+pub unsafe fn repaint_component(component: usize) {
+    // SAFETY: the original is the app's own repaint.
+    if let Some(forward) = crate::sites::originals().repaint
+        && component != 0
+    {
+        // SAFETY: the caller guarantees the live component and the app's own
+        // repaint is the displaced entry.
+        unsafe { forward(component, 0, (2000_u64 << 32) | 0x7d0) };
+    }
 }
 
 #[cfg(test)]

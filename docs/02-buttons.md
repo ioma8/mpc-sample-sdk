@@ -34,16 +34,16 @@ Use the named constants in `mpc_sample_sdk::event::button`; `code` remains avail
 ## Example: a chord and a toast
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Buttons;
 
 impl Mod for Buttons {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed && event.shift {
             mpc_sample_sdk::draw::show_toast("SHIFT + DATA");
-            return ButtonFlow::Consume;
+            return Flow::Consume;
         }
         if event.code == mpc_sample_sdk::event::button::SHIFT {
             mpc_sample_sdk::platform::status::set_status(if event.pressed {
@@ -52,7 +52,7 @@ impl Mod for Buttons {
                 "SHIFT up"
             });
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 
@@ -67,22 +67,36 @@ mpc_sample_sdk::export_mod!(Buttons);
 through the app's own handler, which is useful when a mod synthesizes a press:
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Replay;
 
 impl Mod for Replay {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             // SAFETY: `event` was captured in this callback, so its context and
             // surface are still live while we replay it.
-            let _ = unsafe { mpc_sample_sdk::sites::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
+            let _ = unsafe { mpc_sample_sdk::event::replay_button(&event, mpc_sample_sdk::event::button::CHOP) };
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 ```
 
 Do not replay the same event recursively without a guard; keep a flag in your
 mod or a `Global`.
+
+To press a key from a *later* callback, keep the 16 bytes and call
+`replay_button_live`. It first checks that the event's context still looks like a
+live app object, so a feature can undo a page mode the app changed while a native
+command ran without dereferencing a stale object:
+
+```rust
+// SAFETY: `bytes` came from the page that is still up, and this runs on its UI
+// thread; the SDK re-checks the context before calling the app.
+let _ = unsafe { mpc_sample_sdk::event::replay_button_live(&bytes, mpc_sample_sdk::event::button::CHOP) };
+```
+
+The check proves the vtable belongs to the app image, not which object it is, so
+only replay events captured on the page that is current now.

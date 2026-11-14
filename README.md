@@ -31,12 +31,12 @@ See [the hands-on guide](docs/README.md) and the
 
 It owns everything that is not a feature:
 
-* **Firmware** — find the loaded app, verify the 37 fingerprint words, and map
+* **Firmware** — find the loaded app, verify the 59 fingerprint words, and map
   the image (`image`, `loader`).
 * **Native sample seed** — create a silent, app-owned stereo sample in memory
   for Extract when no pad provides a source. The SDK retains one seed for the
   process lifetime; Extract writes and registers the rendered output as a WAV.
-* **Hooks** — the in-memory `b`/relay/trampoline engine and all 17 sites.  The
+* **Hooks** — the in-memory `b`/relay/trampoline engine and all 22 sites.  The
   displaced originals stay inside `sites`; a mod never stores or types one.
 * **API** — the `Mod` trait, the event types, and `export_mod!`, which emits
   the `.init_array` entry point that installs the hooks and calls the mod.
@@ -54,7 +54,7 @@ It owns everything that is not a feature:
 
 ## Local development changes
 
-The current checkout exposes hardware identifiers in `event::button` and `event::cc`, named pad and trim operations in `platform::control`, and generated-audio extraction in `platform::extract::generated`. Raw control operations remain available. Seed borrowing and firmware object mutations require the live objects on their UI thread. `trim::edges` accepts its threshold explicitly and no longer reads a minimod-specific environment variable.
+The current checkout exposes hardware identifiers in `event::button` and `event::cc`, named pad and trim operations in `platform::control`, and generated-audio extraction in `platform::extract::Source::Generated`. Raw control operations remain available. Seed borrowing and firmware object mutations require the live objects on their UI thread. `trim::edges` accepts its threshold explicitly and no longer reads a minimod-specific environment variable.
 
 ## Install
 
@@ -93,17 +93,17 @@ code example.
 ## A minimal mod
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct MyMod;
 
 impl Mod for MyMod {
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         if event.action == mpc_sample_sdk::PadAction::Press {
             // ...
         }
-        PadFlow::Forward
+        Flow::Forward
     }
 }
 
@@ -119,8 +119,9 @@ the mod's `on_start` runs only after the hooks are in.
 ```
 src/lib.rs          the public surface and the crate docs
 src/event.rs        Mod, the event types and the flows
-src/loader.rs       install, export_mod!, the firmware words
-src/sites.rs        the 17 site adapters
+src/loader.rs       install, export_mod!, the firmware check
+src/firmware.rs     every firmware address the SDK uses, one table
+src/sites.rs        the 22 site adapters
 src/hook.rs         the patch engine
 src/image.rs        the image, memory window and firmware call helpers
 src/audio.rs        the ALSA taps, OutputInfo, latency and S32 mixing
@@ -128,15 +129,16 @@ src/draw.rs         Graphics, the toast, the screen and the repaint pump
 src/midi.rs         NoteEvent and replay
 src/task.rs         the generic one-shot worker
 src/render.rs       RenderJob, RenderOutput and source metadata
-src/platform/       page, sample, pads, slices, trim, WAV, paths, status,
-                    clock, writer, control, effect, extract
+src/platform/       page, descent (the Sample page's object graph), selection,
+                    sample, pads, slices, trim, WAV, paths, status, clock,
+                    writer, control, effect, extract
 ```
 
 ## Vocabulary
 
 | term | meaning |
 |---|---|
-| **Selection** | The exact Sample-page source: screen, page state, sample, frames, channels and rate. `Selection::is_current()` answers “is this still the visible selection?”; `read_audio()` loads the app buffer first, then the WAV. |
+| **Selection** | The exact Sample-page source: screen, page state, sample, frames, channels and rate. `Selection::is_current()` answers “is this still the visible selection?”; `read_current()` revalidates the selection, loads the app buffer first, then the WAV. |
 | **Task** | One generic one-shot worker: it owns a value, moves it to a named thread, catches a panic when the runtime unwinds, and hands the value back once through `take()`. |
 | **RenderJob** | One audio request: a `Selection`, a feature-defined `kind`, interleaved input and the `RenderOutput` buffers the backend fills. |
 | **RenderOutput** | One interleaved f32 buffer plus its frame and channel geometry. |

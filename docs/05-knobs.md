@@ -16,7 +16,7 @@ pub struct CcEvent {
 ## Example: three knobs
 
 ```rust
-use mpc_sample_sdk::{CcEvent, CcFlow, Mod};
+use mpc_sample_sdk::{CcEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Knobs {
@@ -24,12 +24,12 @@ struct Knobs {
 }
 
 impl Mod for Knobs {
-    fn on_cc(&mut self, event: CcEvent) -> CcFlow {
+    fn on_cc(&mut self, event: CcEvent) -> Flow {
         let index = match u16::try_from(event.control).unwrap_or(u16::MAX) {
             mpc_sample_sdk::event::cc::KNOB1 => 0,
             mpc_sample_sdk::event::cc::KNOB2 => 1,
             mpc_sample_sdk::event::cc::KNOB3 => 2,
-            _ => return CcFlow::Forward,
+            _ => return Flow::Forward,
         };
         let normalized = if event.range > 0.0 {
             (event.low / event.range).clamp(0.0, 1.0)
@@ -41,7 +41,7 @@ impl Mod for Knobs {
             "K1 {:.2}  K2 {:.2}  K3 {:.2}",
             self.values[0], self.values[1], self.values[2]
         ));
-        CcFlow::Consume
+        Flow::Consume
     }
 }
 
@@ -56,17 +56,17 @@ raw `event.control` remains available for other controller numbers.
 Sometimes you want the app to keep handling the knob, but also observe it:
 
 ```rust
-use mpc_sample_sdk::{CcEvent, CcFlow, Mod};
+use mpc_sample_sdk::{CcEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Observe;
 
 impl Mod for Observe {
-    fn on_cc(&mut self, event: CcEvent) -> CcFlow {
+    fn on_cc(&mut self, event: CcEvent) -> Flow {
         if event.control == u32::from(mpc_sample_sdk::event::cc::KNOB1) {
             mpc_sample_sdk::platform::status::set_status(&format!("raw {}", event.value));
         }
-        CcFlow::Forward
+        Flow::Forward
     }
 }
 ```

@@ -26,18 +26,18 @@ A toast is a temporary centred message. Store it, then ask for the frame that
 shows it:
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Toasts;
 
 impl Mod for Toasts {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             mpc_sample_sdk::draw::show_toast("saved");
             mpc_sample_sdk::draw::repaint_painted();
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 ```

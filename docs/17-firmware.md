@@ -6,7 +6,7 @@ image instead of patching the wrong offsets.
 ## The normal path
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct ModType;
@@ -16,8 +16,8 @@ impl Mod for ModType {
         mpc_sample_sdk::draw::show_toast("firmware verified");
     }
 
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
-        PadFlow::Forward
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
+        Flow::Forward
     }
 }
 
@@ -28,7 +28,7 @@ mpc_sample_sdk::export_mod!(ModType);
 which:
 
 1. finds the app's image,
-2. checks the 37 firmware words,
+2. checks the firmware instruction fingerprints,
 3. installs the hook sites,
 4. calls `on_start`.
 
@@ -50,7 +50,23 @@ if base == 0 {
 ```
 
 `loader::find_main()` returns the load address, or zero. `firmware_ok(base)`
-checks all 37 site words.
+checks all 59 fingerprint words. Every hook, guard and called function is in one
+table (`src/firmware.rs`); the one data entry, the Sample page vtable, is checked
+where it is read, by `page::bind`.
+
+## Checking the table against a binary
+
+`scripts/check-firmware-table.py` reads every fingerprinted word from a firmware
+binary at the table's offsets. Run it on each firmware bump, before the hooks are
+changed:
+
+```bash
+python3 scripts/check-firmware-table.py "usr/bin/MPC Sample"
+```
+
+The binary is `usr/bin/MPC Sample` from the rootfs of the official updater's
+`Update.img` (1.3.0.12: 119,243,440 bytes). The offsets are file offsets, so the
+binary can be read as it is on disk.
 
 ## Manual installation
 
@@ -71,8 +87,8 @@ advanced diagnostics.
 `image::write` is unsafe: a successful kernel write does not establish Rust
 aliasing safety or firmware object validity. The caller must establish exclusive
 access and preserve the target object’s invariants. `Firmware::from_base` is
-unsafe and only represents an address; it does not authenticate firmware or
-authorize calls. Use `Firmware::find`, which checks the unnamed image covering
+crate-internal: it only represents an address and does not authenticate firmware
+or authorize calls. Use `Firmware::find`, which checks the unnamed image covering
 the tested firmware's probe offset.
 
 Hook installation is two phase. `hook::prepare` writes the relay slots and

@@ -9,15 +9,15 @@
 //! A mod implements [`Mod`] and installs it once:
 //!
 //! ```no_run
-//! use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+//! use mpc_sample_sdk::{Mod, PadEvent, Flow};
 //!
 //! #[derive(Default)]
 //! struct MyMod;
 //!
 //! impl Mod for MyMod {
-//!     fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+//!     fn on_pad(&mut self, event: PadEvent) -> Flow {
 //!         let _ = event;
-//!         PadFlow::Forward
+//!         Flow::Forward
 //!     }
 //! }
 //!
@@ -30,19 +30,19 @@
 pub mod audio;
 pub mod draw;
 pub mod event;
+mod firmware;
 pub mod hook;
 pub mod image;
 pub mod loader;
 pub mod midi;
 pub mod platform;
 pub mod render;
-pub mod sites;
+mod sites;
 pub mod state;
 pub mod task;
 
 pub use event::{
-    AudioHooks, ButtonEvent, ButtonFlow, CcEvent, CcFlow, EncoderEvent, EncoderFlow, Mod,
-    NoteEvent, NoteFlow, PadAction, PadEvent, PadFlow, PaintEvent, SurfaceEvent, SurfaceFlow,
-    erase, shift,
+    AudioHooks, ButtonEvent, CcEvent, EncoderEvent, Flow, InputHooks, Mod, NoteEvent, PadAction,
+    PadEvent, PadResponse, PaintEvent, SurfaceEvent, erase, shift,
 };
 pub use loader::{InstallError, install};

@@ -7,8 +7,6 @@
 
 use crate::image;
 
-/// `[sample + 0x130]` is the sample's metadata block.
-const SAMPLE_METADATA: usize = 0x130;
 /// `[metadata + 0x70..0x80]` is the slice vector: begin, end, capacity.
 const SLICES_BEGIN: usize = 0x70;
 const SLICES_END: usize = 0x78;
@@ -39,7 +37,7 @@ pub fn slice_count(sample: usize) -> Option<Slices> {
     if sample == 0 {
         return None;
     }
-    let metadata = image::read_pointer(sample.checked_add(SAMPLE_METADATA)?)?;
+    let metadata = super::descent::metadata_block(sample)?;
     let begin = image::read_pointer(metadata.checked_add(SLICES_BEGIN)?)?;
     let end = image::read_pointer(metadata.checked_add(SLICES_END)?)?;
     let capacity = image::read_pointer(metadata.checked_add(SLICES_CAPACITY)?)?;
@@ -87,13 +85,13 @@ pub fn verify(sample: usize, positions: &[u32], frames: u32) -> bool {
 }
 
 /// The app's slice Reset.
-const SLICE_RESET: usize = 0x295_0aa0;
+const SLICE_RESET: usize = crate::firmware::SLICE_RESET.offset;
 /// The app's slice Insert.
-const SLICE_INSERT: usize = 0x295_0d20;
+const SLICE_INSERT: usize = crate::firmware::SLICE_INSERT.offset;
 /// The app's "reconcile the last slice's end" setter.
-const SLICE_SET_END: usize = 0x295_0bb0;
+const SLICE_SET_END: usize = crate::firmware::SLICE_SET_END.offset;
 /// The app's selection setter.
-const SELECT_SLICE: usize = 0x166_80a0;
+const SELECT_SLICE: usize = crate::firmware::SELECT_SLICE.offset;
 /// `[screen + 0x180]` is the view's selection object.
 const SCREEN_SELECTION: usize = 0x180;
 /// `[selection + 0x618]` is where the selection index goes.
@@ -169,7 +167,7 @@ pub unsafe fn write_markers(sample: usize, positions: &[u32], frames: u32, scree
 
 /// The view's cached chop mode callback, used when the binding is already torn
 /// down.
-const SET_CHOP_MODE: usize = 0x15d_2840;
+const SET_CHOP_MODE: usize = crate::firmware::SET_CHOP_MODE.offset;
 /// `[screen + 0x168]` is the chop binding.
 const SCREEN_BINDING: usize = 0x168;
 /// The binding's flags byte, owner, manager and invoke slot.
@@ -261,13 +259,10 @@ pub fn chop_kind(screen: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_SLICES, SAMPLE_METADATA, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions,
-    };
+    use super::{MAX_SLICES, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions};
 
     #[test]
     fn the_object_layout_matches_the_reverse_engineering() {
-        assert_eq!(SAMPLE_METADATA, 0x130);
         assert_eq!(SLICE_BYTES, 8);
         assert_eq!(MAX_SLICES, 128);
         assert_eq!(SLICE_START, 0x78);
@@ -291,5 +286,26 @@ mod tests {
         assert!(!valid_positions(&[0], 0), "empty sample");
         let too_many = vec![0_u32; MAX_SLICES as usize + 1];
         assert!(!valid_positions(&too_many, 100), "over the slice limit");
+    }
+
+    #[test]
+    fn the_slice_vector_of_a_chopped_sample_is_counted_from_its_metadata() {
+        use crate::image::test_memory;
+        let sample: usize = 0x0060_0000;
+        let metadata: usize = 0x0061_0000;
+        let begin: usize = 0x0062_0000;
+        let end = begin + 3 * SLICE_BYTES as usize;
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (
+                sample + crate::platform::descent::SAMPLE_METADATA_OFFSET,
+                pointer(metadata),
+            ),
+            (metadata + super::SLICES_BEGIN, pointer(begin)),
+            (metadata + super::SLICES_END, pointer(end)),
+            (metadata + super::SLICES_CAPACITY, pointer(end + 64)),
+        ];
+        let count = test_memory::with(regions, || super::slice_count(sample).map(|s| s.count));
+        assert_eq!(count, Some(3));
     }
 }

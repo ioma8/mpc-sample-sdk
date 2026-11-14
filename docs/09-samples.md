@@ -27,7 +27,7 @@ sample whose geometry does not validate.
 
 ## Reading the audio
 
-`Selection::read_audio` is the normal way to get samples:
+`Selection::read_current` is the normal way to get samples:
 
 ```rust
 use mpc_sample_sdk::platform::selection;
@@ -36,7 +36,7 @@ fn copy_selected_audio() -> Option<Vec<f32>> {
     let screen = mpc_sample_sdk::platform::page::screen();
     // SAFETY: `screen` is the live Sample page recorded by the paint hook.
     let selected = unsafe { selection::current(screen) }?;
-    match selected.read_audio() {
+    match selected.read_current() {
         Ok(audio) => Some(audio),
         Err(error) => {
             mpc_sample_sdk::platform::status::set_status(&format!("{error:?}"));
@@ -49,6 +49,11 @@ fn copy_selected_audio() -> Option<Vec<f32>> {
 It prefers the app's in-memory float buffer and falls back to the exact WAV file
 for a streamed sample. The returned vector is interleaved `f32`, length
 `frames * channels`.
+
+`read_current` checks that the selection is still current before and after the
+copy, and returns `AudioReadError::Stale` when it cannot confirm it. A read taken
+while the page is hidden or the sample has changed is refused rather than
+returned.
 
 ## Checking that a source is still valid
 
@@ -113,10 +118,12 @@ An unknown program (`None` or zero) is treated as “no proven room” and retur
 
 ## Native silent seed
 
-`platform::sample::silent_seed()` returns an app-owned silent stereo sample
-when the firmware's Temporary Samples service has been captured. It returns
-`None` before that service is available or if native construction fails. The
-SDK keeps one seed alive for the process lifetime because Extract can retain
+`platform::sample::silent_seed()` is unsafe: its caller must ensure the
+Temporary Samples service remains alive on its owning thread during the call.
+The SDK tracks both service destructor variants and refuses to reuse a seed
+from an earlier service generation. It returns `None` when lifecycle hooks or
+the service are unavailable, or when native construction fails. The SDK keeps
+the seed's owning reference for the process lifetime because Extract can retain
 references to it. The seed is not inserted into the sample pool; it is meant
 as a temporary Extract source, not as a sample to assign directly. Stock
 Extract writes and registers the final WAV.

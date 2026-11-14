@@ -31,7 +31,7 @@ let request = Request {
 
 // SAFETY: the request uses the live page/state from this UI callback and the
 // buffer outlives the call; no other code mutates the program meanwhile.
-match unsafe { extract::run(&request) } {
+match unsafe { extract::run(extract::Source::Selection(request)) } {
     Ok(extracted) => {
         mpc_sample_sdk::platform::status::set_status(&format!(
             "created pad {}",
@@ -63,24 +63,24 @@ a complete write. In-flight callbacks retain their own audio reference.
   destination around execute.
 
 When `destination` is set, no free pad is required. For `run` on an empty page, provide a populated source sample for the Extract
-range; `generated` instead supplies a temporary native seed. The source is only used to drive the command, not to shape the
+range; `Source::Generated` instead supplies a temporary native seed. The source is only used to drive the command, not to shape the
 generated audio.
 
 ## Generated audio without a source sample
 
-Use `extract::generated` for a generated buffer on a specific destination pad.
+Use `extract::Source::Generated` for a generated buffer on a specific destination pad.
 It validates audio geometry, temporarily borrows the SDK's native seed, runs
 Extract and restores the previous sample and holder. The destination is
 overwritten, so choose a free pad first if existing audio must be preserved.
 
 ```rust
-use mpc_sample_sdk::platform::extract::{self, Generated};
+use mpc_sample_sdk::platform::extract::{self, Generated, Source};
 
 fn write_generated(screen: usize, audio: &[f32], destination: i32) {
     let request = Generated { screen, name: c"Generated", audio, channels: 2, destination };
     // SAFETY: the caller must supply the live Sample page and control surface
     // on the UI thread, with exclusive access to the page and program.
-    let _ = unsafe { extract::generated(&request) };
+    let _ = unsafe { extract::run(Source::Generated(request)) };
 }
 ```
 
@@ -88,8 +88,8 @@ The command is constructed synchronously by the firmware handler. If it has
 still pending after the handler returns, the seeded call waits for it to finish
 before restoring the native layer. A stuck native call or pending command can
 therefore block the UI indefinitely. The SDK does not poll for an assignment or
-writer callback after a synchronous command has returned. Raw `Request`,
-`run`, and `run_seeded` remain available for custom ranges and source behavior.
+writer callback after a synchronous command has returned. `Request`,
+and `Source` remain available for custom ranges and source behavior.
 
 ## Check room first
 

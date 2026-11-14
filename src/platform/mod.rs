@@ -6,6 +6,7 @@
 
 pub mod clock;
 pub mod control;
+pub(crate) mod descent;
 pub mod effect;
 pub mod extract;
 pub mod lighting;
@@ -13,10 +14,10 @@ pub mod pads;
 pub mod page;
 pub mod paths;
 pub mod sample;
-pub mod seed;
+pub(crate) mod seed;
 pub mod selection;
 pub mod slice;
 pub mod status;
 pub mod trim;
 pub mod wav;
-pub mod writer;
+pub(crate) mod writer;

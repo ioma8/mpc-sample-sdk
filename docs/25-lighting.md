@@ -43,7 +43,7 @@ All functions are in `mpc_sample_sdk::platform::lighting`.
 |---|---|
 | `set_pad_rgb(pad, rgb)` | Store an override at full brightness. |
 | `set_pad_light(pad, rgb, brightness)` | Store an override with brightness `0.0..=1.0`. |
-| `send_pad_light(pad, rgb, brightness)` | Store an override and send it immediately. |
+| `send_pad_light(pad, rgb, brightness)` | Store an override and send it. |
 | `clear_pad_rgb(pad)` | Remove one override without sending. |
 | `clear_pad_rgbs()` | Remove all overrides without sending. |
 | `restore_pad_rgb(pad)` | Remove one override and send the app's native light back. |
@@ -52,9 +52,17 @@ All functions are in `mpc_sample_sdk::platform::lighting`.
 
 `PADS` is `16`.
 
-`set_*` and `clear_*` are atomic and can be called from any thread. `send_*` and
-`restore_*` call the app's native lighting callback, so call them on the app's
-UI thread.
+Every function is atomic and may be called from any thread, but only the thread
+that delivers the app's lighting callbacks may call the firmware. The SDK records
+that thread with the sender and checks it on every send: `send_*` and `restore_*`
+reach the firmware immediately from that thread and queue from any other one. The
+next lighting callback applies the queue, because the app only sends when its own
+lighting state changes.
+
+The sender's two vtable destructors are hooked; each forgets the pointer before
+the firmware tears the object down. Together with the thread check that means a
+feature never calls a retained sender from an unrelated thread or after its
+destruction.
 
 Brightness zero turns a pad off. The native converter clamps a small positive
 brightness (up to `0.02`) to `0.02`, so a gradient that starts at zero should
@@ -64,8 +72,12 @@ jump to its first real step on pad 2.
 
 An override is last-writer-wins per pad; there is no ownership stack. If two
 features paint the same pad, the later write wins. Call `restore_pad_rgbs()` (or
-the single-pad form) when leaving a screen that changed the pads. This sends the
-saved native light immediately instead of waiting for the app's next refresh.
+the single-pad form) when leaving a screen that changed the pads. The saved
+native light comes back on the app's next lighting callback.
+
+The app refreshes lighting whenever its state changes, so a queued update lands
+with that refresh. Calls from the app's lighting thread, which is where the
+features run, are sent immediately and do not wait for it.
 
 The SDK does not clear overrides automatically when a mod unloads or a screen
 closes. Restoration is the feature's responsibility.
@@ -117,4 +129,9 @@ full endpoints, cancel restoration and render-close restoration.
 - Last-writer-wins per pad; the SDK does not arbitrate between features.
 - No native-light change callback; the SDK stores the native value for restore
   but does not notify a mod when the app changes it.
-- `send_*` and `restore_*` require the app's UI thread.
+- The two firmware destructors in the sender's vtable are hooked so a replaced
+  sender is forgotten; a safe caller no longer holds the pointer across calls.
+- Only the app's lighting-callback thread sends immediately; other threads queue
+  until the next lighting refresh.
+- The sender must not be destroyed from another thread while a lighting callback
+  is running; the firmware drives and destroys it on one thread.

@@ -26,16 +26,16 @@ static CONTROL: AtomicUsize = AtomicUsize::new(0);
 #[unsafe(no_mangle)]
 pub static g_surface: AtomicUsize = AtomicUsize::new(0);
 
-/// How far past the load address a vtable can point and still be the app's.
-const IMAGE_SPAN: usize = 0x1200_0000;
-
 /// Record the displaced setter, at install time.
 ///
 /// # Safety
 ///
 /// Called once, before the hook can run.
-pub unsafe fn record(original: usize) {
-    ORIGINAL.store(original, Ordering::Release);
+pub(crate) unsafe fn record(original: Option<SetControl>) {
+    ORIGINAL.store(
+        original.map_or(0, |setter| setter as usize),
+        Ordering::Release,
+    );
 }
 
 /// The app's setter, as a hook: learn the live surface, then pass the call on.
@@ -50,10 +50,7 @@ pub unsafe extern "C" fn hook(
     op: i32,
     value: f32,
 ) -> usize {
-    let base = image::base();
-    let looks_live = surface != 0
-        && image::read_pointer(surface)
-            .is_some_and(|vtable| (base..=base + IMAGE_SPAN).contains(&vtable));
+    let looks_live = image::is_app_object(surface);
     // SAFETY: only the UI thread calls the setter.
     unsafe {
         if looks_live {

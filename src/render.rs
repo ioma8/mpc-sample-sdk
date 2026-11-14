@@ -91,14 +91,7 @@ mod tests {
     use crate::platform::selection::Selection;
 
     fn source() -> Selection {
-        Selection {
-            screen: 1,
-            state: 2,
-            sample: 3,
-            frames: 4,
-            channels: 2,
-            rate: 44_100,
-        }
+        Selection::fixture(1, 2, 3, 4, 2, 44_100)
     }
 
     #[test]

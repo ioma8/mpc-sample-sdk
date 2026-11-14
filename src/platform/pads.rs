@@ -8,9 +8,9 @@ use crate::image;
 
 /// The app's "count free pads" entry, as an offset into the program object's
 /// vtable call.
-const FREE_PAD: usize = 0x286_dd00;
+const FREE_PAD: usize = crate::firmware::FREE_PAD.offset;
 /// The app's "is this pad state busy" entry.
-const PAD_BUSY: usize = 0x280_47b0;
+const PAD_BUSY: usize = crate::firmware::PAD_BUSY.offset;
 /// `[program + 0x2808]` is the first pad state, `+0x2810` the last.
 const PAD_STATES: usize = 0x2808;
 /// The app never has more pads than this.
@@ -18,9 +18,6 @@ const MAX_PADS: usize = 128;
 /// `[surface + 0x2808]` is the first pad state, `+0x2810` the last.
 const SURFACE_PADS: usize = 0x2808;
 const SURFACE_PADS_END: usize = 0x2810;
-/// `[pad state + 0x22e8]` is the layer list, `[layers + 0x4a8]` its sample.
-const STATE_LAYERS: usize = 0x22e8;
-const LAYER_SAMPLE: usize = 0x4a8;
 /// `InstrumentLayer::active`, confirmed in the firmware's native serializer.
 const LAYER_ACTIVE: usize = 0xb18;
 
@@ -74,7 +71,11 @@ pub unsafe fn free_estimate(program: usize) -> usize {
     let count = ((last - first) / 8).min(MAX_PADS);
     let mut free = 0;
     for index in 0..count {
-        let Some(state) = image::read_pointer(first + index * 8) else {
+        // A null slot is an empty pad, not the end of the table.
+        let Some(state) = image::read_u64(first + index * 8) else {
+            break;
+        };
+        let Ok(state) = usize::try_from(state) else {
             break;
         };
         if state == 0 {
@@ -109,7 +110,9 @@ fn layer_for_pad(surface: usize, pad: i32) -> Option<usize> {
     if state == 0 {
         return None;
     }
-    image::read_pointer(state.checked_add(STATE_LAYERS)?)
+    super::descent::State::at(state)
+        .layers()
+        .map(super::descent::Layers::address)
 }
 
 /// The pad whose state is `state`, read through the surface's own tables.
@@ -165,7 +168,17 @@ pub fn pad_for_sample(surface: usize, sample: usize) -> Option<i32> {
 #[must_use]
 pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
     let layer = layer_for_pad(surface, pad)?;
-    image::read_pointer(layer.checked_add(LAYER_SAMPLE)?).filter(|sample| *sample != 0)
+    super::descent::Layers::at(layer)
+        .sample()
+        .filter(|sample| *sample != 0)
+}
+
+/// Whether a pad has no sample, or `None` if its state cannot be read.
+#[must_use]
+pub fn pad_is_empty(surface: usize, pad: i32) -> Option<bool> {
+    let layer = layer_for_pad(surface, pad)?;
+    let slot = super::descent::Layers::at(layer).sample_slot()?;
+    image::read_u64(slot).map(|sample| sample == 0)
 }
 
 /// Enable or disable a populated pad's sample layer.
@@ -182,7 +195,7 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
     let Some(layer) = layer_for_pad(surface, pad) else {
         return false;
     };
-    let Some(sample_address) = layer.checked_add(LAYER_SAMPLE) else {
+    let Some(sample_address) = super::descent::Layers::at(layer).sample_slot() else {
         return false;
     };
     if image::read_pointer(sample_address).is_none_or(|sample| sample == 0) {
@@ -202,7 +215,7 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FREE_PAD, MAX_PADS, PAD_BUSY, PAD_STATES, has_room};
+    use super::{MAX_PADS, PAD_STATES, SURFACE_PADS, SURFACE_PADS_END, has_room, sample_for_pad};
 
     #[test]
     fn an_unknown_program_has_no_proven_room() {
@@ -215,9 +228,90 @@ mod tests {
 
     #[test]
     fn the_offsets_are_the_documented_ones() {
-        assert_eq!(FREE_PAD, 0x286_dd00);
-        assert_eq!(PAD_BUSY, 0x280_47b0);
         assert_eq!(PAD_STATES, 0x2808);
         assert_eq!(MAX_PADS, 128);
+    }
+
+    #[test]
+    fn free_estimate_counts_the_empty_pad_slots_of_a_program() {
+        use crate::image::test_memory;
+        // A program whose pad table holds three empty slots.
+        let program: usize = 0x0030_0000;
+        let table: usize = 0x0040_0000;
+        let regions = vec![
+            (program + PAD_STATES, table.to_le_bytes().to_vec()),
+            (
+                program + PAD_STATES + 8,
+                (table + 24).to_le_bytes().to_vec(),
+            ),
+            (table, vec![0_u8; 24]),
+        ];
+        // SAFETY: the fixture stands in for the program; no native call is made,
+        // because every slot is empty.
+        let free = test_memory::with(regions, || unsafe { super::free_estimate(program) });
+        assert_eq!(free, 3);
+    }
+
+    #[test]
+    fn a_pad_leads_through_its_state_and_layers_to_its_sample() {
+        use crate::image::test_memory;
+        let surface: usize = 0x0070_0000;
+        let array: usize = 0x0071_0000;
+        let state: usize = 0x0072_0000;
+        let layers: usize = 0x0073_0000;
+        let sample: usize = 0x0074_0000;
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (surface + SURFACE_PADS, pointer(array)),
+            (surface + SURFACE_PADS_END, pointer(array + 8)),
+            (array, pointer(state)),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET,
+                pointer(layers),
+            ),
+            (
+                layers + crate::platform::descent::LAYERS_SAMPLE_OFFSET,
+                pointer(sample),
+            ),
+        ];
+        assert_eq!(
+            test_memory::with(regions, || sample_for_pad(surface, 0)),
+            Some(sample)
+        );
+    }
+    #[test]
+    fn pad_emptiness_distinguishes_empty_occupied_and_unreadable() {
+        use crate::image::test_memory;
+        let (surface, array, state, layers) = (
+            0x0070_0000_usize,
+            0x0071_0000_usize,
+            0x0072_0000_usize,
+            0x0073_0000_usize,
+        );
+        let pointer = |value: usize| value.to_le_bytes().to_vec();
+        let base = vec![
+            (surface + SURFACE_PADS, pointer(array)),
+            (surface + SURFACE_PADS_END, pointer(array + 8)),
+            (array, pointer(state)),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET,
+                pointer(layers),
+            ),
+        ];
+        assert_eq!(
+            test_memory::with(base.clone(), || super::pad_is_empty(surface, 0)),
+            None
+        );
+        for (sample, expected) in [(0, true), (0x0074_0000, false)] {
+            let mut regions = base.clone();
+            regions.push((
+                layers + crate::platform::descent::LAYERS_SAMPLE_OFFSET,
+                pointer(sample),
+            ));
+            assert_eq!(
+                test_memory::with(regions, || super::pad_is_empty(surface, 0)),
+                Some(expected)
+            );
+        }
     }
 }

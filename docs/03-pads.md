@@ -18,15 +18,15 @@ pub struct PadEvent {
 ## Example: own pad 5 on the Sample page
 
 ```rust
-use mpc_sample_sdk::{Mod, PadAction, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadAction, PadEvent, Flow};
 
 #[derive(Default)]
 struct Pads;
 
 impl Mod for Pads {
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         if event.pad != 4 {
-            return PadFlow::Forward;
+            return Flow::Forward;
         }
         match event.action {
             PadAction::Press => {
@@ -39,7 +39,7 @@ impl Mod for Pads {
                 mpc_sample_sdk::draw::show_toast("pad 5 released");
             }
         }
-        PadFlow::Consume
+        Flow::Consume
     }
 }
 
@@ -51,23 +51,23 @@ mpc_sample_sdk::export_mod!(Pads);
 ## Example: only while a specific screen is visible
 
 ```rust
-use mpc_sample_sdk::{Mod, PadEvent, PadFlow};
+use mpc_sample_sdk::{Mod, PadEvent, Flow};
 
 #[derive(Default)]
 struct ScopedPads;
 
 impl Mod for ScopedPads {
-    fn on_pad(&mut self, event: PadEvent) -> PadFlow {
+    fn on_pad(&mut self, event: PadEvent) -> Flow {
         let screen = mpc_sample_sdk::platform::page::screen();
         // SAFETY: `screen` is the live page recorded by the paint hook on this
         // UI thread.
         if !unsafe { mpc_sample_sdk::platform::page::visible(screen) } {
-            return PadFlow::Forward;
+            return Flow::Forward;
         }
         if event.pad == 0 {
-            return PadFlow::Consume;
+            return Flow::Consume;
         }
-        PadFlow::Forward
+        Flow::Forward
     }
 }
 ```

@@ -4,7 +4,7 @@
 object and a signed delta.
 
 ```rust
-use mpc_sample_sdk::{EncoderEvent, EncoderFlow, Mod};
+use mpc_sample_sdk::{EncoderEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Encoder {
@@ -12,13 +12,13 @@ struct Encoder {
 }
 
 impl Mod for Encoder {
-    fn on_encoder(&mut self, event: EncoderEvent) -> EncoderFlow {
+    fn on_encoder(&mut self, event: EncoderEvent) -> Flow {
         if event.delta == 0 {
-            return EncoderFlow::Forward;
+            return Flow::Forward;
         }
         self.row = (self.row + event.delta.signum()).rem_euclid(8);
         mpc_sample_sdk::draw::show_toast(&format!("row {}", self.row));
-        EncoderFlow::Consume
+        Flow::Consume
     }
 }
 
@@ -34,7 +34,7 @@ The encoder event carries the control surface. The `ButtonEvent` carries the
 same surface; store it when your UI opens, and compare:
 
 ```rust
-use mpc_sample_sdk::{EncoderEvent, EncoderFlow, Mod};
+use mpc_sample_sdk::{EncoderEvent, Flow, Mod};
 
 #[derive(Default)]
 struct OwnedEncoder {
@@ -43,12 +43,12 @@ struct OwnedEncoder {
 }
 
 impl Mod for OwnedEncoder {
-    fn on_encoder(&mut self, event: EncoderEvent) -> EncoderFlow {
+    fn on_encoder(&mut self, event: EncoderEvent) -> Flow {
         if !self.open || event.surface != self.surface {
-            return EncoderFlow::Forward;
+            return Flow::Forward;
         }
         // ... change the selection ...
-        EncoderFlow::Consume
+        Flow::Consume
     }
 }
 ```
@@ -58,17 +58,17 @@ impl Mod for OwnedEncoder {
 The push is a button, not an encoder event. In `on_button` it is code `0x6f`:
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Push;
 
 impl Mod for Push {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             mpc_sample_sdk::draw::show_toast("confirm");
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 ```

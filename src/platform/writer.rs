@@ -33,26 +33,6 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Plan>> {
     PLAN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Copy a raw interleaved buffer and arm substitution on the current thread.
-///
-/// # Safety
-/// `buffer` must reference `frames * channels` initialized, readable `f32`
-/// values for this call. Call only immediately around the intended native
-/// writer command, with no nested unrelated writes before its first callback.
-/// Prefer [`super::extract::run`], which owns and scopes the operation.
-pub unsafe fn arm(buffer: usize, frames: usize, source_frames: usize, channels: usize) {
-    let Some(cells) = frames.checked_mul(channels) else {
-        return;
-    };
-    if buffer == 0 || cells == 0 || cells > isize::MAX as usize / size_of::<f32>() {
-        return;
-    }
-    // SAFETY: the caller supplies initialized audio of the validated length.
-    let audio: Arc<[f32]> =
-        unsafe { std::slice::from_raw_parts(buffer as *const f32, cells) }.into();
-    let _ = arm_owned(audio, source_frames, channels);
-}
-
 /// Arm an owned buffer for the operation running on this thread.
 ///
 /// Returns the operation's identity, or `None` when the geometry is unusable.
@@ -80,7 +60,7 @@ pub(crate) fn arm_owned(audio: Arc<[f32]>, source_frames: usize, channels: usize
 }
 
 /// Stop substituting unconditionally. In-flight callbacks retain their audio.
-pub fn clear() {
+pub(crate) fn clear() {
     *lock() = None;
 }
 
@@ -101,7 +81,7 @@ pub(crate) fn finish(id: ArmId) -> bool {
 }
 
 /// The app's writer signature: closure plus the block descriptor.
-pub type Writer = unsafe extern "C" fn(usize, usize);
+pub(crate) type Writer = unsafe extern "C" fn(usize, usize);
 
 /// Substitute the armed audio only for the owning thread and writer closure.
 ///
@@ -117,7 +97,7 @@ pub type Writer = unsafe extern "C" fn(usize, usize);
     clippy::cast_ptr_alignment,
     reason = "the native descriptor's pointer slot is read and written unaligned"
 )]
-pub unsafe fn write(closure: usize, block: *mut u8, writer: Option<Writer>) {
+pub(crate) unsafe fn write(closure: usize, block: *mut u8, writer: Option<Writer>) {
     let Some(writer) = writer else { return };
     if block.is_null() {
         // SAFETY: the caller supplies the original native call's arguments.
@@ -184,7 +164,7 @@ pub unsafe fn write(closure: usize, block: *mut u8, writer: Option<Writer>) {
 
 /// Wait at most `timeout_ms` for callbacks; return whether all completed.
 #[must_use]
-pub fn wait_idle(timeout_ms: u32) -> bool {
+pub(crate) fn wait_idle(timeout_ms: u32) -> bool {
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(u64::from(timeout_ms));
     while BUSY.load(Ordering::Acquire) != 0 {
@@ -200,7 +180,7 @@ pub fn wait_idle(timeout_ms: u32) -> bool {
 ///
 /// # Safety
 /// The contract of [`write()`] applies.
-pub unsafe fn substitute(closure: usize, block: *mut u8, writer: Option<Writer>) {
+pub(crate) unsafe fn substitute(closure: usize, block: *mut u8, writer: Option<Writer>) {
     // SAFETY: forwarded caller contract.
     unsafe { write(closure, block, writer) };
 }

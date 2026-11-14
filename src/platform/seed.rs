@@ -1,15 +1,16 @@
 //! Native silent sample borrowing for Extract.
 
 use crate::image;
+use crate::platform::descent::State;
 use crate::platform::{control, pads, sample, selection};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 mod layout {
     pub(super) const SURFACE_PAD_LIST: usize = 0x2808;
     pub(super) const SURFACE_PAD_LIST_END: usize = 0x2810;
-    pub(super) const STATE_LAYERS: usize = 0x22e8;
-    pub(super) const LAYERS_SAMPLE: usize = 0x4a8;
-    pub(super) const HOLDER_FROM_SAMPLE: usize = 0x4b0 - LAYERS_SAMPLE;
+    /// The holder sits this far past the sample slot.
+    pub(super) const HOLDER_FROM_SAMPLE: usize =
+        0x4b0 - crate::platform::descent::LAYERS_SAMPLE_OFFSET;
 }
 
 /// The live sample/holder borrowed while Extract runs (a silent seed), plus the
@@ -121,29 +122,30 @@ fn capture_empty_pads(borrow: &mut Borrow, surface: usize) {
             *item = true;
             continue;
         }
-        let Some(layers) = image::read_pointer(state as usize + layout::STATE_LAYERS) else {
+        let Some(layers) = State::at(state as usize).layers() else {
             continue;
         };
-        *item = image::read_u64(layers + layout::LAYERS_SAMPLE) == Some(0);
+        *item = layers.sample_slot().and_then(image::read_u64) == Some(0);
     }
 }
 
 /// Borrow a native silent seed for Extract.
 ///
 /// # Safety
-/// The screen and surface must remain live on the owning UI thread until cleanup.
+/// The screen, surface, and most recently observed sample service must remain
+/// live on their owning UI thread until cleanup.
 #[must_use]
-pub unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
+pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
     let mut borrow = borrow_state();
     if borrow.slot != 0 {
         return None;
     }
     let state = selection::page_state(screen)?;
-    let slot = image::read_pointer(state.checked_add(layout::STATE_LAYERS)?)?
-        .checked_add(layout::LAYERS_SAMPLE)?;
+    let slot = State::at(state).layers()?.sample_slot()?;
     let old_sample = image::read_u64(slot)?;
     let old_holder = image::read_u64(slot + layout::HOLDER_FROM_SAMPLE)?;
-    let seed = sample::silent_seed()?;
+    // SAFETY: the caller guarantees the sample service is live on its owning thread.
+    let seed = unsafe { sample::silent_seed() }?;
     let frames = seed.frames();
     capture_empty_pads(&mut borrow, control::surface());
     if !write_slot(slot, seed.sample() as u64) {
@@ -186,7 +188,7 @@ fn clear_extra_provider_pads(provider: usize, destination: i32) {
 /// Call on the owning UI thread while the original page and surface remain live.
 /// Returns false if the original layer could not be restored.
 #[must_use]
-pub unsafe fn finish(destination: i32) -> bool {
+pub(crate) unsafe fn finish(destination: i32) -> bool {
     let (provider, restored) = clear_borrow();
     if restored {
         clear_extra_provider_pads(provider, destination);
@@ -196,10 +198,13 @@ pub unsafe fn finish(destination: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::layout::{HOLDER_FROM_SAMPLE, LAYERS_SAMPLE};
+    use super::layout::HOLDER_FROM_SAMPLE;
 
     #[test]
     fn holder_is_adjacent_to_the_sample_slot() {
-        assert_eq!(LAYERS_SAMPLE + HOLDER_FROM_SAMPLE, 0x4b0);
+        assert_eq!(
+            crate::platform::descent::LAYERS_SAMPLE_OFFSET + HOLDER_FROM_SAMPLE,
+            0x4b0
+        );
     }
 }

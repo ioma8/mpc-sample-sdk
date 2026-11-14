@@ -54,18 +54,18 @@ paint. Do not keep a `Graphics` value after `on_paint` returns.
 A toast is one retained line the SDK draws for about a second:
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 
 #[derive(Default)]
 struct Toast;
 
 impl Mod for Toast {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             mpc_sample_sdk::draw::show_toast("confirmed");
             mpc_sample_sdk::draw::repaint_painted();
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 ```
@@ -98,3 +98,9 @@ last painted component.
 
 If you start a worker, call `draw::repaint_painted()` when it finishes so an
 idle UI notices the result.
+
+A single request is not enough when the app is busy (loading a sample, running a
+native command): it can drop or coalesce the repaint, and a job whose completion
+is only consumed on the paint hook then waits forever. While a job is pending,
+return its component from the pump function on every tick instead of only when a
+flag is set, so a dropped frame is retried 60 ms later.

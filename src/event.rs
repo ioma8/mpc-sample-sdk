@@ -72,15 +72,6 @@ pub struct PadEvent {
     pub velocity: f32,
 }
 
-/// What the mod wants done with a pad event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PadFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A control-surface event.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceEvent {
@@ -111,15 +102,6 @@ impl SurfaceEvent {
     }
 }
 
-/// What the mod wants done with a control-surface event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SurfaceFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A turn of the DATA encoder.
 #[derive(Clone, Copy, Debug)]
 pub struct EncoderEvent {
@@ -127,15 +109,6 @@ pub struct EncoderEvent {
     pub surface: usize,
     /// The signed delta.
     pub delta: i32,
-}
-
-/// What the mod wants done with an encoder turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EncoderFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
 }
 
 /// A button event.
@@ -159,15 +132,6 @@ pub struct ButtonEvent {
     pub surface: usize,
 }
 
-/// What the mod wants done with a button event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ButtonFlow {
-    /// Hand the event to the app unchanged.
-    Forward,
-    /// Swallow it.
-    Consume,
-}
-
 /// A control-change event.
 #[derive(Clone, Copy, Debug)]
 pub struct CcEvent {
@@ -183,22 +147,15 @@ pub struct CcEvent {
     pub range: f32,
 }
 
-/// What the mod wants done with a control-change event.
+/// What the mod wants done with an event.
+///
+/// The same decision for every event kind. For a MIDI note that the mod
+/// rewrote with [`NoteEvent::replay_as_pad`], `Forward` makes the SDK forward
+/// the rewritten event and then restore it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CcFlow {
+pub enum Flow {
     /// Hand the event to the app unchanged.
     Forward,
-    /// Swallow it.
-    Consume,
-}
-
-/// What the mod wants done with a MIDI note.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoteFlow {
-    /// Forward the event with its original context and source.
-    Forward,
-    /// Forward the rewritten event as the selected pad.
-    Replayed,
     /// Swallow it.
     Consume,
 }
@@ -236,6 +193,33 @@ pub struct AudioHooks {
     pub input_planar: Option<InputPlanar>,
 }
 
+/// A pad decision and an optional token to finish after native forwarding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadResponse {
+    /// Whether the SDK should pass this event to the firmware.
+    pub flow: Flow,
+    /// Opaque value returned to `pad_complete`; zero means no completion.
+    pub token: u64,
+}
+
+/// Independent live input callbacks, called without the UI module lock.
+///
+/// These callbacks may run concurrently or re-enter. They must keep their own
+/// bounded, nonblocking state and must not access the mod's UI-owned fields.
+/// When present they replace the corresponding `Mod` callback.
+#[derive(Clone, Copy, Default)]
+pub struct InputHooks {
+    /// Hardware pad press and release decisions.
+    pub pad: Option<fn(PadEvent) -> PadResponse>,
+    /// Complete a nonzero pad token after the native handler has returned.
+    /// The boolean says whether the native handler was actually called.
+    pub pad_complete: Option<fn(PadEvent, u64, bool)>,
+    /// Control-surface pad and pressure events.
+    pub surface: Option<fn(SurfaceEvent) -> Flow>,
+    /// MIDI note decisions, including any in-place replay.
+    pub note: Option<fn(&mut NoteEvent<'_>) -> Flow>,
+}
+
 /// A mod built on this SDK.
 ///
 /// Every method has a default, so a mod overrides only what it needs.  The SDK
@@ -252,33 +236,33 @@ pub trait Mod: Send + 'static {
     fn on_start(&mut self) {}
 
     /// A pad was pressed or released.
-    fn on_pad(&mut self, _event: PadEvent) -> PadFlow {
-        PadFlow::Forward
+    fn on_pad(&mut self, _event: PadEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A control-surface event arrived.
-    fn on_surface(&mut self, _event: SurfaceEvent) -> SurfaceFlow {
-        SurfaceFlow::Forward
+    fn on_surface(&mut self, _event: SurfaceEvent) -> Flow {
+        Flow::Forward
     }
 
     /// The DATA encoder turned.
-    fn on_encoder(&mut self, _event: EncoderEvent) -> EncoderFlow {
-        EncoderFlow::Forward
+    fn on_encoder(&mut self, _event: EncoderEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A button was pressed or released.
-    fn on_button(&mut self, _event: ButtonEvent) -> ButtonFlow {
-        ButtonFlow::Forward
+    fn on_button(&mut self, _event: ButtonEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A control change arrived.
-    fn on_cc(&mut self, _event: CcEvent) -> CcFlow {
-        CcFlow::Forward
+    fn on_cc(&mut self, _event: CcEvent) -> Flow {
+        Flow::Forward
     }
 
     /// A MIDI note event arrived.
-    fn on_note(&mut self, _event: &mut NoteEvent) -> NoteFlow {
-        NoteFlow::Forward
+    fn on_note(&mut self, _event: &mut NoteEvent) -> Flow {
+        Flow::Forward
     }
 
     /// The app is assigning a label; return a replacement or `None`.
@@ -294,6 +278,14 @@ pub trait Mod: Send + 'static {
     /// A screen painted.  The app has already drawn; `event.sample_page` says
     /// whether it was the Sample page.
     fn on_paint(&mut self, _graphics: &mut Graphics, _event: PaintEvent) {}
+
+    /// Independent callbacks for time-sensitive input, copied at installation.
+    ///
+    /// These callbacks run without the UI lock; implementations must synchronize
+    /// shared state without blocking, including when hooks run concurrently.
+    fn input(&self) -> InputHooks {
+        InputHooks::default()
+    }
 
     /// The audio-side hooks, called on the audio thread without the module lock.
     ///
@@ -342,4 +334,72 @@ pub(crate) fn set_shift(held: bool) {
 /// Record the ERASE state; the button site calls this after the mod decided.
 pub(crate) fn set_erase(held: bool) {
     ERASE.store(held, core::sync::atomic::Ordering::Release);
+}
+
+/// The app's own button dispatcher, for a mod that replays an event.
+#[must_use]
+fn buttons_original() -> Option<unsafe extern "C" fn(usize)> {
+    // SAFETY: written once at install.
+    crate::sites::originals().buttons
+}
+
+/// Replay one key press/release on a button event captured on the current page.
+///
+/// Unlike [`replay_button`] this may run in a later callback, for example to
+/// undo a page mode the app changed while a command ran. It first checks that
+/// the event's context still looks like a live app object; the caller must
+/// still ensure the event came from the page that is up now.
+///
+/// Returns false when the event has no context, the context is not a live app
+/// object, or the button hook is missing.
+///
+/// # Safety
+///
+/// `event` must be the first 16 bytes of a button event the app dispatched on
+/// the page that is current now, and this must run on that page's UI thread.
+#[must_use]
+pub unsafe fn replay_button_live(event: &[u8; 16], key: u8) -> bool {
+    let Ok(word) = <[u8; 8]>::try_from(&event[..8]) else {
+        return false;
+    };
+    let Ok(context) = usize::try_from(u64::from_le_bytes(word)) else {
+        return false;
+    };
+    if !crate::image::is_app_object(context) {
+        return false;
+    }
+    // SAFETY: the caller guarantees the event belongs to the current page and
+    // the context check above proved it is still a live app object.
+    unsafe { replay_button(event, key) }
+}
+
+/// Replay one key press/release on a captured button event.
+///
+/// Returns false when no event was captured or the button hook is missing.
+///
+/// # Safety
+///
+/// `event` must be the first 16 bytes of a button event captured during the
+/// current callback, whose context and surface are still live.  Replaying it
+/// later would dereference a stale app object.  A caller that keeps an event
+/// across callbacks must use [`replay_button_live`], which checks the context.
+#[must_use]
+pub unsafe fn replay_button(event: &[u8; 16], key: u8) -> bool {
+    let Some(original) = buttons_original() else {
+        return false;
+    };
+    // A blank event has no context pointer; replaying it would dereference zero.
+    if event[..8] == [0; 8] {
+        return false;
+    }
+    let mut bytes = *event;
+    bytes[8] = key;
+    bytes[9] = 0x7f;
+    // SAFETY: the captured event is the app's own and the original is its own
+    // dispatcher.
+    unsafe { original(bytes.as_ptr() as usize) };
+    bytes[9] = 0;
+    // SAFETY: as above.
+    unsafe { original(bytes.as_ptr() as usize) };
+    true
 }

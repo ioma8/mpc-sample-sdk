@@ -141,7 +141,7 @@ fn restore(event: &mut [u8], saved: Saved) {
 /// One note event, decoded and ready to be replayed.
 ///
 /// The mod reads the fields, optionally calls [`NoteEvent::replay_as_pad`], and
-/// returns [`crate::NoteFlow`]; the SDK forwards and restores the event.
+/// returns [`crate::Flow`]; the SDK forwards and restores the event.
 pub struct NoteEvent<'event> {
     /// The app's `this` pointer.
     pub app: usize,
@@ -243,6 +243,13 @@ impl<'event> NoteEvent<'event> {
         true
     }
 
+    /// Whether the event was rewritten by [`NoteEvent::replay_as_pad`] and is
+    /// still awaiting its forward and restore.
+    #[must_use]
+    pub const fn is_replayed(&self) -> bool {
+        self.saved.is_some()
+    }
+
     /// The context the SDK forwards with.
     #[must_use]
     pub const fn forward_context(&self) -> usize {
@@ -275,6 +282,58 @@ impl<'event> NoteEvent<'event> {
             self.event.as_ptr().cast_mut()
         }
     }
+}
+
+/// Send a note-on through the app's own input path.
+///
+/// Returns false when the note hook is not installed.
+///
+/// This bypasses the mod's pad policy and is intended for a controlled internal
+/// selection, followed by [`send_note_off`].
+///
+/// # Safety
+///
+/// `input` and `properties` must be the app's live input objects on their owning
+/// UI thread, and `source`/`pad`/`velocity` must be valid for the firmware.
+#[must_use]
+pub unsafe fn send_note_on(
+    input: usize,
+    source: i32,
+    pad: i32,
+    properties: usize,
+    velocity: f32,
+) -> bool {
+    // SAFETY: the original is the app's own note-on handler.
+    if let Some(forward) =
+        // SAFETY: the pointer is the app's displaced note-on entry.
+        crate::sites::originals().note_on
+    {
+        // SAFETY: the app's own call.
+        unsafe { forward(input, source, pad, properties, velocity) };
+        true
+    } else {
+        false
+    }
+}
+
+/// Send a note-off through the app's own input path.
+///
+/// # Safety
+///
+/// `input` must be the app's live input object on its owning UI thread, and
+/// `source`/`pad` must identify the note-on this releases.
+pub unsafe fn send_note_off(input: usize, source: i32, pad: i32) {
+    // SAFETY: the original is the app's own handler.
+    if let Some(forward) = crate::sites::originals().note_off {
+        // SAFETY: the app's own call.
+        unsafe { forward(input, source, pad) };
+    }
+}
+
+/// Whether both note hooks are installed.
+#[must_use]
+pub fn notes_ready() -> bool {
+    crate::sites::notes_ready()
 }
 
 #[cfg(test)]

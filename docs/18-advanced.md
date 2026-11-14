@@ -8,21 +8,21 @@ low-level helpers that are still safe to call.
 `on_surface` sees the raw control-surface event after the SDK decoded the payload:
 
 ```rust
-use mpc_sample_sdk::{Mod, SurfaceEvent, SurfaceFlow};
+use mpc_sample_sdk::{Mod, SurfaceEvent, Flow};
 
 #[derive(Default)]
 struct Surface;
 
 impl Mod for Surface {
-    fn on_surface(&mut self, event: SurfaceEvent) -> SurfaceFlow {
+    fn on_surface(&mut self, event: SurfaceEvent) -> Flow {
         if event.kind == 0x90 && event.velocity > 0 && (0..16).contains(&event.code) {
             mpc_sample_sdk::platform::status::set_status(&format!(
                 "surface pad {}",
                 event.code + 1
             ));
-            return SurfaceFlow::Consume;
+            return Flow::Consume;
         }
-        SurfaceFlow::Forward
+        Flow::Forward
     }
 }
 ```
@@ -60,32 +60,31 @@ should apply.
 
 ## Low-level sites
 
-`sites` wraps the displaced app functions. They are unsafe because each takes an
-app object that must still be live, and they bypass the normal event flow:
+The displaced app functions are private to the SDK. The few calls a mod may
+need live with the concept they act on. Each takes an app object that must still
+be live, and they bypass the normal event flow:
 
 ```rust
-use mpc_sample_sdk::sites;
+use mpc_sample_sdk::{draw, midi};
 
 // SAFETY: `screen` is the live Sample page recorded by the paint hook.
-unsafe { sites::repaint_component(mpc_sample_sdk::platform::page::screen()) };
+unsafe { draw::repaint_component(mpc_sample_sdk::platform::page::screen()) };
 
 // Are the note hooks installed?
-let ready = sites::notes_ready();
+let ready = midi::notes_ready();
 
 // SAFETY: `input` must be the app's live input object; `0` is a placeholder.
-unsafe { sites::send_note_off(0, 0, 4) };
+unsafe { midi::send_note_off(0, 0, 4) };
 let _ = ready;
 ```
 
-`replay_button` is in [Buttons](02-buttons.md). `repaint_function` and the
-`*_original` accessors are for diagnostics; they expose the app's own function
-pointers and should not be stored by feature code.
+`event::replay_button` is in [Buttons](02-buttons.md). `draw::repaint_function`
+returns the app's own repaint pointer for diagnostics; it should not be stored by
+feature code.
 
-`platform::writer` is the buffer substitution behind [Extract](13-extract.md).
-The SDK arms and clears it for you. Do not call `writer::arm` or
-`writer::clear` from feature code unless you are implementing a new extraction
-command; the hooks are process-wide and a stray arm would replace another
-writer's blocks.
+The buffer substitution behind [Extract](13-extract.md) is internal to the SDK.
+`extract::run` arms and clears it for you, and no feature code can reach it: a
+stray arm would replace another writer's blocks.
 
 ## Image and hook internals
 

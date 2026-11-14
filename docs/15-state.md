@@ -68,7 +68,7 @@ for ordinary private state; use a plain `static` for that.
 ## State and callbacks
 
 ```rust
-use mpc_sample_sdk::{ButtonEvent, ButtonFlow, Mod};
+use mpc_sample_sdk::{ButtonEvent, Flow, Mod};
 use mpc_sample_sdk::state::Global;
 
 #[derive(Clone, Copy, Default)]
@@ -82,7 +82,7 @@ static TOGGLE: Global<Toggle> = Global::new(Toggle { on: false });
 struct StateMod;
 
 impl Mod for StateMod {
-    fn on_button(&mut self, event: ButtonEvent) -> ButtonFlow {
+    fn on_button(&mut self, event: ButtonEvent) -> Flow {
         if event.code == mpc_sample_sdk::event::button::DATA && event.pressed {
             // SAFETY: UI callback; borrows end before invoking firmware.
             let on = unsafe {
@@ -95,7 +95,7 @@ impl Mod for StateMod {
             });
             mpc_sample_sdk::draw::repaint_painted();
         }
-        ButtonFlow::Forward
+        Flow::Forward
     }
 }
 

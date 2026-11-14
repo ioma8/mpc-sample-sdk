@@ -12,10 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering
 /// input tap skip a block (or the other way around).
 static OUT_TAP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static IN_TAP_ACTIVE: AtomicBool = AtomicBool::new(false);
-static IN_PCM: AtomicUsize = AtomicUsize::new(0);
-static OUT_PCM: AtomicUsize = AtomicUsize::new(0);
-static IN_RATE: AtomicU32 = AtomicU32::new(44_100);
-static OUT_RATE: AtomicU32 = AtomicU32::new(44_100);
 
 /// One direction's tap guard.  Reentry forwards the app's call untouched instead
 /// of aliasing the tap's scratch or geometry.
@@ -44,27 +40,95 @@ const DEVICE_MAX_CHANNELS: usize = 32;
 #[derive(Clone, Copy, Debug)]
 pub struct OutputInfo {
     /// The app's PCM handle, for a mod that needs its own ALSA query.
-    pub pcm: usize,
+    pcm: usize,
     /// Interleaved channel count.
-    pub channels: usize,
+    channels: usize,
     /// Stream rate in Hz.
-    pub rate: u32,
+    rate: u32,
     /// Frames in this block.
-    pub block_frames: usize,
+    block_frames: usize,
     /// The device's own reported delay, in frames.
-    pub device_delay: u32,
+    device_delay: u32,
     /// The output ring's size in frames, zero until read.
-    pub buffer_out: u32,
+    buffer_out: u32,
     /// The output ring's period size in frames, zero until read.
-    pub period_out: u32,
+    period_out: u32,
     /// The input ring's size in frames, zero until read.
-    pub buffer_in: u32,
+    buffer_in: u32,
     /// The input ring's period size in frames, zero until read.
-    pub period_in: u32,
+    period_in: u32,
     /// The input stream's own backlog, in frames.
-    pub input_delay: u32,
+    input_delay: u32,
     /// The loudest output sample so far, as bits.
-    pub output_peak_bits: u32,
+    output_peak_bits: u32,
+}
+
+impl OutputInfo {
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn pcm(&self) -> usize {
+        self.pcm
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn block_frames(&self) -> usize {
+        self.block_frames
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn device_delay(&self) -> u32 {
+        self.device_delay
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn buffer_out(&self) -> u32 {
+        self.buffer_out
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn period_out(&self) -> u32 {
+        self.period_out
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn buffer_in(&self) -> u32 {
+        self.buffer_in
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn period_in(&self) -> u32 {
+        self.period_in
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn input_delay(&self) -> u32 {
+        self.input_delay
+    }
+
+    /// See the field of the same name on the tap that produced this block.
+    #[must_use]
+    pub const fn output_peak_bits(&self) -> u32 {
+        self.output_peak_bits
+    }
 }
 
 impl OutputInfo {
@@ -118,6 +182,7 @@ type HwPeriodSize = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_ulong, 
 type HwChannels = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_uint) -> i32;
 type HwFormat = unsafe extern "C" fn(*mut libc::c_void, *mut i32) -> i32;
 type HwFree = unsafe extern "C" fn(*mut libc::c_void);
+type HwRate = unsafe extern "C" fn(*mut libc::c_void, *mut u32, *mut i32) -> i32;
 
 struct Alsa {
     malloc: HwMalloc,
@@ -126,6 +191,7 @@ struct Alsa {
     period: HwPeriodSize,
     channels: HwChannels,
     format: HwFormat,
+    rate: HwRate,
     free: HwFree,
 }
 
@@ -152,6 +218,7 @@ impl Alsa {
                 period: look_up(c"snd_pcm_hw_params_get_period_size")?,
                 channels: look_up(c"snd_pcm_hw_params_get_channels")?,
                 format: look_up(c"snd_pcm_hw_params_get_format")?,
+                rate: look_up(c"snd_pcm_hw_params_get_rate")?,
                 free: look_up(c"snd_pcm_hw_params_free")?,
             })
         })
@@ -159,78 +226,79 @@ impl Alsa {
     }
 }
 
-/// The device stream's geometry: its buffer in frames, its channels and whether
-/// it carries 32-bit samples.
+/// What the device reports about one stream. A field the device does not report
+/// is zero (or `false`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamGeometry {
+    /// The buffer size in frames.
+    pub buffer: u32,
+    /// The period size in frames.
+    pub period: u32,
+    /// The channel count.
+    pub channels: u32,
+    /// Whether the stream carries 32-bit samples.
+    pub s32: bool,
+}
+
+/// The device stream's geometry, or `None` when the device cannot be queried.
 ///
 /// # Safety
 ///
-/// `pcm` must be the app's live PCM handle; the out pointers may be null.
-pub unsafe fn stream_geometry(
-    pcm: usize,
-    channels: *mut u32,
-    s32: *mut i32,
-    period: *mut u32,
-) -> u32 {
-    let Some(alsa) = Alsa::load() else {
-        return 0;
-    };
+/// `pcm` must be the app's live PCM handle.
+#[must_use]
+pub unsafe fn stream_geometry(pcm: usize) -> Option<StreamGeometry> {
+    let alsa = Alsa::load()?;
     if pcm == 0 {
-        return 0;
+        return None;
     }
     let mut params: *mut libc::c_void = core::ptr::null_mut();
     // SAFETY: the entry point allocates the parameters.
     if unsafe { (alsa.malloc)(core::ptr::from_mut(&mut params)) } < 0 || params.is_null() {
-        return 0;
+        return None;
     }
-    let mut frames = 0_u32;
     // SAFETY: the handle is live and `params` is ours.
-    if unsafe { (alsa.current)(pcm as *mut libc::c_void, params) } >= 0 {
-        let mut size = 0_u64;
-        // SAFETY: see above.
-        if unsafe { (alsa.bufsize)(params, core::ptr::from_mut(&mut size)) } >= 0
-            && size < DEVICE_MAX_FRAMES
-        {
-            frames = u32::try_from(size).unwrap_or(0);
-        }
-        if !period.is_null() {
-            let mut size = 0_u64;
-            let mut direction = 0_i32;
-            // SAFETY: see above.
-            if unsafe {
-                (alsa.period)(
-                    params,
-                    core::ptr::from_mut(&mut size),
-                    core::ptr::from_mut(&mut direction),
-                )
-            } >= 0
-                && size < DEVICE_MAX_FRAMES
-            {
-                // SAFETY: the caller passed a writable slot.
-                unsafe { *period = u32::try_from(size).unwrap_or(0) };
-            }
-        }
-        if !channels.is_null() {
-            let mut count = 0_u32;
-            // SAFETY: see above.
-            if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
-                && count > 0
-                && count as usize <= DEVICE_MAX_CHANNELS
-            {
-                // SAFETY: the caller passed a writable slot.
-                unsafe { *channels = count };
-            }
-        }
-        if !s32.is_null() {
-            let mut format = -1;
-            // SAFETY: see above.
-            let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
-            // SAFETY: the caller passed a writable slot.
-            unsafe { *s32 = i32::from(known && format == FORMAT_S32_LE) };
-        }
+    if unsafe { (alsa.current)(pcm as *mut libc::c_void, params) } < 0 {
+        // SAFETY: the parameters came from the malloc above.
+        unsafe { (alsa.free)(params) };
+        return None;
     }
+    let mut geometry = StreamGeometry::default();
+    let mut size = 0_u64;
+    // SAFETY: the handle is live and `params` is ours.
+    if unsafe { (alsa.bufsize)(params, core::ptr::from_mut(&mut size)) } >= 0
+        && size < DEVICE_MAX_FRAMES
+    {
+        geometry.buffer = u32::try_from(size).unwrap_or(0);
+    }
+    let mut size = 0_u64;
+    let mut direction = 0_i32;
+    // SAFETY: see above.
+    if unsafe {
+        (alsa.period)(
+            params,
+            core::ptr::from_mut(&mut size),
+            core::ptr::from_mut(&mut direction),
+        )
+    } >= 0
+        && size < DEVICE_MAX_FRAMES
+    {
+        geometry.period = u32::try_from(size).unwrap_or(0);
+    }
+    let mut count = 0_u32;
+    // SAFETY: see above.
+    if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
+        && count > 0
+        && count as usize <= DEVICE_MAX_CHANNELS
+    {
+        geometry.channels = count;
+    }
+    let mut format = -1;
+    // SAFETY: see above.
+    let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
+    geometry.s32 = known && format == FORMAT_S32_LE;
     // SAFETY: the parameters came from the malloc above.
     unsafe { (alsa.free)(params) };
-    frames
+    Some(geometry)
 }
 
 /// Frames the output tap keeps: two seconds at the device rate.
@@ -253,12 +321,6 @@ pub static mut g_outtap_w: u32 = 0;
 
 /// Whether the device rings need re-reading.
 static BUF_DIRTY: AtomicI32 = AtomicI32::new(0);
-/// The output ring's size in frames.
-static OUT_BUFFER: AtomicU32 = AtomicU32::new(0);
-static OUT_PERIOD: AtomicU32 = AtomicU32::new(0);
-/// The input ring's size in frames.
-static IN_BUFFER: AtomicU32 = AtomicU32::new(0);
-static IN_PERIOD: AtomicU32 = AtomicU32::new(0);
 /// The input stream's backlog, in frames.
 static IN_DELAY: AtomicU32 = AtomicU32::new(0);
 
@@ -273,10 +335,139 @@ pub fn buffers_stale() -> bool {
     BUF_DIRTY.load(Ordering::Acquire) != 0
 }
 
-/// Whether a tap must re-read its stream geometry.
+/// One direction's device stream, as its tap last read it.
 ///
-/// The cached handle matters: a second stream (or a planar capture after an
-/// interleaved one) must not inherit the first stream's format or channels.
+/// The atomics here are the only copy of the geometry. The exported `g_*`
+/// symbols are refreshed from the same reading by [`Stream::refresh`].
+struct Stream {
+    pcm: AtomicUsize,
+    channels: AtomicU32,
+    s32: AtomicBool,
+    buffer: AtomicU32,
+    period: AtomicU32,
+    rate: AtomicU32,
+    /// This direction's bit in [`BUF_DIRTY`].
+    dirty_bit: i32,
+    /// Writes the exported `g_*` mirrors of this direction.
+    mirror: fn(&Geometry),
+}
+
+/// One reading of a stream's geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Geometry {
+    pcm: usize,
+    channels: u32,
+    s32: bool,
+    buffer: u32,
+    period: u32,
+    rate: u32,
+}
+
+impl Stream {
+    const fn new(dirty_bit: i32, mirror: fn(&Geometry)) -> Self {
+        Self {
+            pcm: AtomicUsize::new(0),
+            channels: AtomicU32::new(0),
+            s32: AtomicBool::new(false),
+            buffer: AtomicU32::new(0),
+            period: AtomicU32::new(0),
+            rate: AtomicU32::new(44_100),
+            dirty_bit,
+            mirror,
+        }
+    }
+
+    /// The last reading, field by field.
+    fn snapshot(&self) -> Geometry {
+        Geometry {
+            pcm: self.pcm.load(Ordering::Acquire),
+            channels: self.channels.load(Ordering::Acquire),
+            s32: self.s32.load(Ordering::Acquire),
+            buffer: self.buffer.load(Ordering::Acquire),
+            period: self.period.load(Ordering::Acquire),
+            rate: self.rate.load(Ordering::Acquire),
+        }
+    }
+
+    /// Whether this stream must be read again before its block is used.
+    ///
+    /// The cached handle matters: a second stream (or a planar capture after an
+    /// interleaved one) must not inherit the first stream's format or channels.
+    fn needs_refresh(&self, pcm: usize) -> bool {
+        needs_refresh(
+            self.buffer.load(Ordering::Acquire),
+            BUF_DIRTY.load(Ordering::Acquire),
+            self.pcm.load(Ordering::Acquire),
+            pcm,
+            self.dirty_bit,
+        )
+    }
+
+    /// Read the device's geometry for `pcm` and publish it.
+    ///
+    /// # Safety
+    ///
+    /// `pcm` is the app's live handle.
+    unsafe fn refresh(&self, pcm: usize) -> Geometry {
+        // SAFETY: the geometry reads the stream's own parameters.
+        let device = unsafe { stream_geometry(pcm) }.unwrap_or_default();
+        let frames = device.buffer;
+        let geometry = Geometry {
+            pcm,
+            channels: device.channels,
+            s32: device.s32,
+            buffer: frames,
+            period: device.period,
+            rate: stream_rate(pcm),
+        };
+        self.pcm.store(geometry.pcm, Ordering::Release);
+        self.channels.store(geometry.channels, Ordering::Release);
+        self.s32.store(geometry.s32, Ordering::Release);
+        self.buffer.store(geometry.buffer, Ordering::Release);
+        self.period.store(geometry.period, Ordering::Release);
+        self.rate.store(geometry.rate, Ordering::Release);
+        (self.mirror)(&geometry);
+        if frames != 0 {
+            BUF_DIRTY.fetch_and(!self.dirty_bit, Ordering::AcqRel);
+        }
+        geometry
+    }
+
+    fn buffer(&self) -> u32 {
+        self.buffer.load(Ordering::Acquire)
+    }
+
+    fn period(&self) -> u32 {
+        self.period.load(Ordering::Acquire)
+    }
+
+    fn rate(&self) -> u32 {
+        self.rate.load(Ordering::Acquire)
+    }
+}
+
+/// The output stream: written by the app, read by the output tap.
+static OUT: Stream = Stream::new(1, mirror_output);
+/// The input stream: read by the app, read by the input tap.
+static IN: Stream = Stream::new(2, mirror_input);
+
+fn mirror_output(geometry: &Geometry) {
+    // SAFETY: this module's exported mirrors, written under the output tap guard.
+    unsafe {
+        g_buf_out = geometry.buffer;
+        g_period_out = geometry.period;
+    }
+}
+
+fn mirror_input(geometry: &Geometry) {
+    // SAFETY: this module's exported mirrors, written under the input tap guard.
+    unsafe {
+        g_buf_in = geometry.buffer;
+        g_period_in = geometry.period;
+    }
+}
+
+/// Whether a tap must re-read its stream geometry.
 fn needs_refresh(buffer: u32, dirty: i32, cached_pcm: usize, pcm: usize, bit: i32) -> bool {
     buffer == 0 || dirty & bit != 0 || cached_pcm != pcm
 }
@@ -284,25 +475,25 @@ fn needs_refresh(buffer: u32, dirty: i32, cached_pcm: usize, pcm: usize, bit: i3
 /// The output ring's size in frames, zero until read.
 #[must_use]
 pub fn output_buffer() -> u32 {
-    OUT_BUFFER.load(Ordering::Acquire)
+    OUT.buffer()
 }
 
 /// The input ring's size in frames, zero until read.
 #[must_use]
 pub fn input_buffer() -> u32 {
-    IN_BUFFER.load(Ordering::Acquire)
+    IN.buffer()
 }
 
 /// The output ring's period size in frames, zero until read.
 #[must_use]
 pub fn output_period() -> u32 {
-    OUT_PERIOD.load(Ordering::Acquire)
+    OUT.period()
 }
 
 /// The input ring's period size in frames, zero until read.
 #[must_use]
 pub fn input_period() -> u32 {
-    IN_PERIOD.load(Ordering::Acquire)
+    IN.period()
 }
 
 /// The input stream's backlog in frames, zero when unknown.
@@ -328,14 +519,6 @@ pub fn set_extra_latency(frames: i32) {
     G_LAT_EXTRA.store(frames.max(0), Ordering::Release);
 }
 
-/// The output stream's channel count, zero until read.
-pub static mut G_OUT_CH: u32 = 0;
-/// Whether the output stream carries 32-bit samples.
-pub static mut G_OUT_S32: i32 = 0;
-/// The input stream's channel count, zero until read.
-pub static mut G_IN_CH: u32 = 0;
-/// Whether the input stream carries 32-bit samples.
-pub static mut G_IN_S32: i32 = 0;
 /// The input ring's size in frames, as last read (exported for the device tests).
 #[unsafe(no_mangle)]
 pub static mut g_buf_in: u32 = 0;
@@ -379,19 +562,13 @@ pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u6
         // SAFETY: forward the caller's original ALSA arguments unchanged.
         return unsafe { write(pcm, buffer.cast(), size) };
     };
-    if needs_refresh(
-        output_buffer(),
-        BUF_DIRTY.load(Ordering::Acquire),
-        OUT_PCM.load(Ordering::Acquire),
-        pcm,
-        1,
-    ) {
+    if OUT.needs_refresh(pcm) {
         // SAFETY: `pcm` is the live handle.
-        unsafe { refresh_output(pcm) };
+        unsafe { OUT.refresh(pcm) };
     }
     let mut buffer = buffer;
-    // SAFETY: the output guard protects the stream geometry and scratch buffer.
-    let (channels, s32) = unsafe { (G_OUT_CH, G_OUT_S32) };
+    let output = OUT.snapshot();
+    let (channels, s32) = (output.channels, i32::from(output.s32));
     if !buffer.is_null() && size != 0 && channels != 0 && s32 != 0 && size < DEVICE_MAX_FRAMES {
         let delay = measure_delay(pcm);
         let block = usize::try_from(size).unwrap_or(0);
@@ -407,7 +584,7 @@ pub unsafe extern "C" fn snd_pcm_writei(pcm: usize, buffer: *const i32, size: u6
         let info = OutputInfo {
             pcm,
             channels: channels as usize,
-            rate: OUT_RATE.load(Ordering::Acquire),
+            rate: OUT.rate(),
             block_frames: block,
             device_delay: delay,
             buffer_out: output_buffer(),
@@ -447,40 +624,6 @@ fn recordable(size: u64, written: i64, channels: u32, s32: i32) -> bool {
         && channels as usize <= DEVICE_MAX_CHANNELS
 }
 
-/// Read the output ring's geometry.
-///
-/// # Safety
-///
-/// `pcm` is the app's live handle.
-unsafe fn refresh_output(pcm: usize) {
-    let mut channels = 0_u32;
-    let mut s32 = 0_i32;
-    let mut period = 0_u32;
-    // SAFETY: the geometry reads the stream's own parameters.
-    let frames = unsafe {
-        stream_geometry(
-            pcm,
-            core::ptr::from_mut(&mut channels),
-            core::ptr::from_mut(&mut s32),
-            core::ptr::from_mut(&mut period),
-        )
-    };
-    OUT_BUFFER.store(frames, Ordering::Release);
-    OUT_PERIOD.store(period, Ordering::Release);
-    // SAFETY: this module's statics.
-    unsafe {
-        g_buf_out = frames;
-        g_period_out = period;
-        G_OUT_CH = channels;
-        G_OUT_S32 = s32;
-    }
-    OUT_RATE.store(stream_rate(pcm), Ordering::Release);
-    OUT_PCM.store(pcm, Ordering::Release);
-    if frames != 0 {
-        BUF_DIRTY.fetch_and(!1, Ordering::AcqRel);
-    }
-}
-
 /// Measure the device's reported delay.
 fn measure_delay(pcm: usize) -> u32 {
     // SAFETY: this module's statics.
@@ -505,44 +648,33 @@ fn measure_delay(pcm: usize) -> u32 {
     }
 }
 
-/// The stream's rate, cached once.
+/// The stream's rate, or 44.1 kHz when the device does not report a sane one.
 fn stream_rate(pcm: usize) -> u32 {
-    {
-        type Malloc = unsafe extern "C" fn(*mut *mut libc::c_void) -> i32;
-        type Current = unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_void) -> i32;
-        type Rate = unsafe extern "C" fn(*mut libc::c_void, *mut u32, *mut i32) -> i32;
-        type Free = unsafe extern "C" fn(*mut libc::c_void);
-        let (Some(malloc), Some(current), Some(rate), Some(free)) = (
-            look_up::<Malloc>(c"snd_pcm_hw_params_malloc"),
-            look_up::<Current>(c"snd_pcm_hw_params_current"),
-            look_up::<Rate>(c"snd_pcm_hw_params_get_rate"),
-            look_up::<Free>(c"snd_pcm_hw_params_free"),
-        ) else {
-            return 44_100;
-        };
-        let mut params: *mut libc::c_void = core::ptr::null_mut();
-        // SAFETY: the entry point allocates the parameters.
-        if unsafe { malloc(core::ptr::from_mut(&mut params)) } < 0 || params.is_null() {
-            return 44_100;
-        }
-        let mut hertz = 0_u32;
-        let mut direction = 0_i32;
-        // SAFETY: the handle is live and `params` is ours.
-        let known = unsafe {
-            current(pcm as *mut libc::c_void, params) >= 0
-                && rate(
-                    params,
-                    core::ptr::from_mut(&mut hertz),
-                    core::ptr::from_mut(&mut direction),
-                ) >= 0
-        };
-        // SAFETY: the parameters came from the malloc above.
-        unsafe { free(params) };
-        if known && (8_000..=192_000).contains(&hertz) {
-            hertz
-        } else {
-            44_100
-        }
+    let Some(alsa) = Alsa::load() else {
+        return 44_100;
+    };
+    let mut params: *mut libc::c_void = core::ptr::null_mut();
+    // SAFETY: the entry point allocates the parameters.
+    if unsafe { (alsa.malloc)(core::ptr::from_mut(&mut params)) } < 0 || params.is_null() {
+        return 44_100;
+    }
+    let mut hertz = 0_u32;
+    let mut direction = 0_i32;
+    // SAFETY: the handle is live and `params` is ours.
+    let known = unsafe {
+        (alsa.current)(pcm as *mut libc::c_void, params) >= 0
+            && (alsa.rate)(
+                params,
+                core::ptr::from_mut(&mut hertz),
+                core::ptr::from_mut(&mut direction),
+            ) >= 0
+    };
+    // SAFETY: the parameters came from the malloc above.
+    unsafe { (alsa.free)(params) };
+    if known && crate::platform::descent::RATE_RANGE.contains(&hertz) {
+        hertz
+    } else {
+        44_100
     }
 }
 
@@ -619,15 +751,9 @@ pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) 
     };
     // SAFETY: this module's statics are protected by the guard.
     unsafe { measure_input_delay(pcm) };
-    if needs_refresh(
-        input_buffer(),
-        BUF_DIRTY.load(Ordering::Acquire),
-        IN_PCM.load(Ordering::Acquire),
-        pcm,
-        2,
-    ) {
+    if IN.needs_refresh(pcm) {
         // SAFETY: `pcm` is the live handle.
-        unsafe { refresh_input(pcm) };
+        unsafe { IN.refresh(pcm) };
     }
     // SAFETY: the app's own reader takes these.
     let got = unsafe { capture(pcm, buffer.cast::<u8>(), size) };
@@ -636,11 +762,13 @@ pub unsafe extern "C" fn snd_pcm_readi(pcm: usize, buffer: *mut i32, size: u64) 
         unsafe {
             G_AUDIO_IN_CALLS = G_AUDIO_IN_CALLS.wrapping_add(1);
             let frames = usize::try_from(got).unwrap_or(0);
-            if !buffer.is_null() && input_usable(frames, size, G_IN_CH, G_IN_S32) {
-                let channels = G_IN_CH as usize;
+            let input = IN.snapshot();
+            if !buffer.is_null() && input_usable(frames, size, input.channels, i32::from(input.s32))
+            {
+                let channels = input.channels as usize;
                 let samples = core::slice::from_raw_parts(buffer.cast_const(), frames * channels);
                 if let Some(hook) = crate::loader::audio_hooks().input_interleaved {
-                    hook(samples, channels, IN_RATE.load(Ordering::Acquire));
+                    hook(samples, channels, IN.rate());
                 }
             }
         }
@@ -664,40 +792,6 @@ unsafe fn measure_input_delay(pcm: usize) {
                 IN_DELAY.store(delay, Ordering::Release);
             }
         }
-    }
-}
-
-/// Read the input ring's geometry.
-///
-/// # Safety
-///
-/// `pcm` is the app's live handle.
-unsafe fn refresh_input(pcm: usize) {
-    let mut channels = 0_u32;
-    let mut s32 = 0_i32;
-    let mut period = 0_u32;
-    // SAFETY: the geometry reads the stream's own parameters.
-    let frames = unsafe {
-        stream_geometry(
-            pcm,
-            core::ptr::from_mut(&mut channels),
-            core::ptr::from_mut(&mut s32),
-            core::ptr::from_mut(&mut period),
-        )
-    };
-    IN_BUFFER.store(frames, Ordering::Release);
-    IN_PERIOD.store(period, Ordering::Release);
-    // SAFETY: this module's statics.
-    unsafe {
-        g_buf_in = frames;
-        g_period_in = period;
-        G_IN_CH = channels;
-        G_IN_S32 = s32;
-    }
-    IN_RATE.store(stream_rate(pcm), Ordering::Release);
-    IN_PCM.store(pcm, Ordering::Release);
-    if frames != 0 {
-        BUF_DIRTY.fetch_and(!2, Ordering::AcqRel);
     }
 }
 
@@ -769,23 +863,17 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
     };
     // SAFETY: pcm is the caller's live stream.
     unsafe { measure_input_delay(pcm) };
-    if needs_refresh(
-        input_buffer(),
-        BUF_DIRTY.load(Ordering::Acquire),
-        IN_PCM.load(Ordering::Acquire),
-        pcm,
-        2,
-    ) {
+    if IN.needs_refresh(pcm) {
         // SAFETY: pcm is the caller's live stream.
-        unsafe { refresh_input(pcm) };
+        unsafe { IN.refresh(pcm) };
     }
     // SAFETY: the app's own reader takes these.
     let got = unsafe { capture(pcm, buffers, size) };
     if got <= 0 || buffers.is_null() {
         return got;
     }
-    // SAFETY: this module's statics.
-    let (channels, s32) = unsafe { (G_IN_CH, G_IN_S32) };
+    let input = IN.snapshot();
+    let (channels, s32) = (input.channels, i32::from(input.s32));
     if s32 == 0 || channels == 0 {
         return got;
     }
@@ -809,7 +897,7 @@ pub unsafe extern "C" fn snd_pcm_readn(pcm: usize, buffers: *mut *mut i32, size:
     if live != 0
         && let Some(hook) = crate::loader::audio_hooks().input_planar
     {
-        hook(&planes[..live], IN_RATE.load(Ordering::Acquire));
+        hook(&planes[..live], IN.rate());
     }
     got
 }
@@ -876,11 +964,13 @@ pub fn add_planes_i32(dst: &mut [i32], channels: usize, planes: &[&[f32]]) -> bo
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::Ordering;
     use std::sync::Mutex;
 
     use super::{
-        OutputInfo, TapGuard, buffers_stale, extra_latency, input_usable, mark_buffers_stale,
-        needs_refresh, output_buffer, recordable, set_channels_with, set_extra_latency,
+        OutputInfo, Stream, TapGuard, buffers_stale, extra_latency, input_usable,
+        mark_buffers_stale, needs_refresh, output_buffer, recordable, set_channels_with,
+        set_extra_latency,
     };
 
     /// Records the arguments a mock ALSA setter received.
@@ -891,6 +981,17 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pcm, params, channels));
         0
+    }
+
+    #[test]
+    fn a_stream_is_read_again_for_a_new_handle_or_before_its_first_read() {
+        fn ignore(_: &super::Geometry) {}
+        let stream = Stream::new(1, ignore);
+        assert!(stream.needs_refresh(7), "never read");
+        stream.pcm.store(7, Ordering::Release);
+        stream.buffer.store(64, Ordering::Release);
+        assert!(stream.needs_refresh(8), "a different handle");
+        assert_eq!(stream.snapshot().buffer, 64);
     }
 
     #[test]

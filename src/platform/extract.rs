@@ -11,7 +11,7 @@
 
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use crate::image;
 use crate::platform::pads;
@@ -22,11 +22,9 @@ const RANGE_START: usize = 0x78;
 /// Where it keeps the range end.
 const RANGE_END: usize = 0xd0;
 /// The app's Extract handler.
-const EXTRACT_HANDLER: usize = 0x0165_80d0;
-/// `[state + 0x2310]` is the app's program object.
-const STATE_PROGRAM: usize = 0x2310;
+const EXTRACT_HANDLER: usize = crate::firmware::EXTRACT_HANDLER.offset;
 /// `juce::String(const char *)`.
-const STRING_FROM_C: usize = 0x00f5_35c0;
+const STRING_FROM_C: usize = crate::firmware::STRING_FROM_C.offset;
 
 /// One extraction.
 pub struct Request<'a> {
@@ -51,6 +49,14 @@ pub struct Request<'a> {
     /// The native command is patched at `+0x58` before execute, so an empty or
     /// populated destination is overwritten without a second assignment command.
     pub destination: Option<i32>,
+}
+
+/// What an Extract copies: a sample on the Sample page, or audio the mod made.
+pub enum Source<'a> {
+    /// The page's selected source, with the range to extract.
+    Selection(Request<'a>),
+    /// A generated buffer, written to a destination pad.
+    Generated(Generated<'a>),
 }
 
 /// Generated audio to write to an explicit pad. Existing pad contents are overwritten.
@@ -119,9 +125,47 @@ struct Operation {
     executing: AtomicBool,
     finished: AtomicBool,
     wrote: AtomicBool,
+    /// Guards the `finished` transition so a waiter cannot miss its wake-up.
+    done: Mutex<()>,
+    settled: Condvar,
+}
+
+impl Operation {
+    /// Mark the native command as returned and wake anyone waiting for it.
+    fn complete(&self) {
+        let _guard = lock(&self.done);
+        self.finished.store(true, Ordering::Release);
+        self.settled.notify_all();
+    }
 }
 static OPERATION: Mutex<Option<Arc<Operation>>> = Mutex::new(None);
-static RUN: Mutex<()> = Mutex::new(());
+/// Whether an extraction is in flight: set from the moment a request is accepted
+/// until it returns, on any thread.
+static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Holds [`IN_FLIGHT`] for one request.
+struct Flight;
+
+impl Flight {
+    fn enter() -> Result<Self, ExtractError> {
+        IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| ExtractError::NotApplied)
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+/// Whether an extraction is running on any thread.
+#[must_use]
+pub fn in_flight() -> bool {
+    IN_FLIGHT.load(Ordering::Acquire)
+}
 static EXECUTION: Mutex<()> = Mutex::new(());
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -129,11 +173,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The app's own command constructor.
-static mut ORIGINAL_CTOR: Option<
-    unsafe extern "C" fn(usize, usize, i32, usize, usize, usize, usize, usize, usize),
-> = None;
+pub(crate) type Constructor =
+    unsafe extern "C" fn(usize, usize, i32, usize, usize, usize, usize, usize, usize);
 /// The app's own command method.
-static mut ORIGINAL_EXEC: Option<unsafe extern "C" fn(usize) -> i32> = None;
+pub(crate) type Command = unsafe extern "C" fn(usize) -> i32;
+
+/// The app's own command constructor.
+static mut ORIGINAL_CTOR: Option<Constructor> = None;
+/// The app's own command method.
+static mut ORIGINAL_EXEC: Option<Command> = None;
 // Native names are process-lived because the firmware may retain them. Key by
 // content rather than address, and do not impose an arbitrary lifetime limit.
 static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
@@ -143,19 +191,11 @@ static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
 /// # Safety
 ///
 /// Called once, before the hooks can run.
-pub unsafe fn record(constructor: usize, execute: usize) {
+pub(crate) unsafe fn record(constructor: Option<Constructor>, execute: Option<Command>) {
     // SAFETY: the caller's contract.
     unsafe {
-        ORIGINAL_CTOR = if constructor == 0 {
-            None
-        } else {
-            Some(core::mem::transmute_copy::<usize, _>(&constructor))
-        };
-        ORIGINAL_EXEC = if execute == 0 {
-            None
-        } else {
-            Some(core::mem::transmute_copy::<usize, _>(&execute))
-        };
+        ORIGINAL_CTOR = constructor;
+        ORIGINAL_EXEC = execute;
     }
 }
 
@@ -189,7 +229,7 @@ fn snapshot() -> Option<Arc<Operation>> {
 /// # Safety
 ///
 /// The app calls this with its own arguments.
-pub unsafe extern "C" fn ctor_entry(
+pub(crate) unsafe extern "C" fn ctor_entry(
     command: usize,
     name: usize,
     destination: usize,
@@ -233,7 +273,7 @@ pub unsafe extern "C" fn ctor_entry(
 ///
 /// The app calls this with its own command.
 #[must_use]
-pub unsafe extern "C" fn exec_entry(command: usize) -> i32 {
+pub(crate) unsafe extern "C" fn exec_entry(command: usize) -> i32 {
     let operation = snapshot().filter(|operation| lock(&operation.commands).contains(&command));
     // SAFETY: recorded before the hooks are installed.
     let execute = unsafe { *core::ptr::addr_of!(ORIGINAL_EXEC) };
@@ -249,12 +289,12 @@ pub unsafe extern "C" fn exec_entry(command: usize) -> i32 {
         // A different operation owns the writer. Forward this command unchanged,
         // and report completion only after its native execution returns.
         let status = forward_execute(command, execute);
-        operation.finished.store(true, Ordering::Release);
+        operation.complete();
         return status;
     };
     // SAFETY: command and method belong to this native hook invocation.
     let status = unsafe { run_command(command, &operation, execute) };
-    operation.finished.store(true, Ordering::Release);
+    operation.complete();
     status
 }
 
@@ -370,7 +410,9 @@ fn write_u64(address: usize, value: u64) -> bool {
 /// Call on the UI thread with live matching Sample-page and state objects in
 /// the validated firmware. No other code may mutate their sample/program until
 /// the native operation completes. Native writer callbacks must run synchronously
-/// on the command executor thread and consume each block before returning.
+/// on the command executor thread and consume each block before returning. For
+/// generated audio, the most recently observed sample service must also remain
+/// live on that thread.
 ///
 /// With a buffer the writer substitutes it; without one the app copies its own
 /// range. The tested firmware executes the native command synchronously. The
@@ -380,18 +422,29 @@ fn write_u64(address: usize, value: u64) -> bool {
 ///
 /// Returns [`ExtractError`] when the request is unusable, the page has no
 /// program, or the app did not assign a pad.
-pub unsafe fn run(request: &Request<'_>) -> Result<Extracted, ExtractError> {
-    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
-    // SAFETY: forwarded from this function's caller.
-    unsafe { run_inner(request, false) }
+pub unsafe fn run(source: Source<'_>) -> Result<Extracted, ExtractError> {
+    match source {
+        Source::Selection(request) => {
+            let _flight = Flight::enter()?;
+            // SAFETY: forwarded from this function's caller.
+            unsafe { run_inner(&request, false) }
+        }
+        // SAFETY: forwarded from this function's caller.
+        Source::Generated(generated) => unsafe { run_generated(&generated) },
+    }
 }
 
 /// Keep borrowed native state alive until a constructed command returns.
 fn wait_for_completion(operation: &Operation) {
-    if !lock(&operation.commands).is_empty() {
-        while !operation.finished.load(Ordering::Acquire) {
-            std::thread::sleep(core::time::Duration::from_millis(1));
-        }
+    if lock(&operation.commands).is_empty() {
+        return;
+    }
+    let mut guard = lock(&operation.done);
+    while !operation.finished.load(Ordering::Acquire) {
+        guard = operation
+            .settled
+            .wait(guard)
+            .unwrap_or_else(PoisonError::into_inner);
     }
 }
 
@@ -415,18 +468,9 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     {
         return Err(ExtractError::NotApplied);
     }
-    let Some(program) = image::read_u64(
-        request
-            .state
-            .checked_add(STATE_PROGRAM)
-            .ok_or(ExtractError::Invalid)?,
-    ) else {
+    let Some(program) = super::descent::State::at(request.state).program() else {
         return Err(ExtractError::NoProgram);
     };
-    let program = usize::try_from(program).unwrap_or(0);
-    if program == 0 {
-        return Err(ExtractError::NoProgram);
-    }
     // SAFETY: the request contract supplies the live program.
     let before = unsafe { pads::free_count(program) };
     if before < 0 {
@@ -452,6 +496,8 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
         executing: AtomicBool::new(false),
         finished: AtomicBool::new(false),
         wrote: AtomicBool::new(false),
+        done: Mutex::new(()),
+        settled: Condvar::new(),
     });
     *lock(&OPERATION) = Some(Arc::clone(&operation));
     // SAFETY: the caller guarantees the live native page and validated firmware.
@@ -497,8 +543,8 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
 /// # Errors
 /// Returns an error for invalid audio, an unavailable page or seed, or a failed
 /// extraction. This can block indefinitely if the native call hangs; see
-/// [`run_seeded`]. The destination is overwritten on success.
-pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractError> {
+/// `run_seeded`. The destination is overwritten on success.
+unsafe fn run_generated(request: &Generated<'_>) -> Result<Extracted, ExtractError> {
     let channels = usize::try_from(request.channels).map_err(|_| ExtractError::Invalid)?;
     if !(1..=2).contains(&channels)
         || request.audio.is_empty()
@@ -537,9 +583,9 @@ pub unsafe fn generated(request: &Generated<'_>) -> Result<Extracted, ExtractErr
 ///
 /// # Errors
 /// Returns an error if the seed cannot be borrowed or the extraction fails.
-pub unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
+unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
     let destination = request.destination.ok_or(ExtractError::Invalid)?;
-    let _run = RUN.try_lock().map_err(|_| ExtractError::NotApplied)?;
+    let _flight = Flight::enter()?;
     if lock(&OPERATION)
         .as_ref()
         .is_some_and(|operation| !operation.finished.load(Ordering::Acquire))
@@ -576,14 +622,10 @@ pub unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractErro
 #[cfg(test)]
 mod tests {
     use super::{
-        Arm, ExtractError, Generated, Operation, RANGE_END, RANGE_START, Request, generated,
+        Arm, ExtractError, Generated, Operation, RANGE_END, RANGE_START, Request, Source, run,
         wait_for_completion,
     };
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    };
+    use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
 
     #[test]
     fn generated_audio_rejects_invalid_geometry_before_touching_the_firmware() {
@@ -596,7 +638,11 @@ mod tests {
             destination: 0,
         };
         // SAFETY: invalid geometry is rejected without accessing firmware.
-        assert_eq!(unsafe { generated(&request) }, Err(ExtractError::Invalid));
+        assert_eq!(
+            // SAFETY: invalid geometry is rejected without accessing firmware.
+            unsafe { run(Source::Generated(request)) },
+            Err(ExtractError::Invalid)
+        );
     }
 
     #[test]
@@ -608,6 +654,8 @@ mod tests {
             executing: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             wrote: AtomicBool::new(false),
+            done: Mutex::new(()),
+            settled: std::sync::Condvar::new(),
         });
         let (started_tx, started_rx) = mpsc::channel();
         let (returned_tx, returned_rx) = mpsc::channel();
@@ -623,7 +671,7 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_millis(25))
                 .is_err()
         );
-        operation.finished.store(true, Ordering::Release);
+        operation.complete();
         returned_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
@@ -663,7 +711,7 @@ mod tests {
             request(0, 10, 2, Some(&[0.0; 3])),
         ] {
             // SAFETY: every case is rejected before any native access.
-            let error = unsafe { super::run(&request) }.unwrap_err();
+            let error = unsafe { run(Source::Selection(request)) }.unwrap_err();
             assert_eq!(error, ExtractError::Invalid);
         }
         let request = Request {
@@ -671,7 +719,7 @@ mod tests {
             ..request(0, 10, 1, Some(&audio))
         };
         // SAFETY: the out-of-range destination is rejected before native access.
-        let error = unsafe { super::run(&request) }.unwrap_err();
+        let error = unsafe { run(Source::Selection(request)) }.unwrap_err();
         assert_eq!(error, ExtractError::Invalid);
     }
 
@@ -689,7 +737,7 @@ mod tests {
             destination: None,
         };
         // SAFETY: invalid geometry is rejected before any native access.
-        let error = unsafe { super::run(&request) }.unwrap_err();
+        let error = unsafe { run(Source::Selection(request)) }.unwrap_err();
         assert_eq!(error, ExtractError::Invalid);
     }
 }
