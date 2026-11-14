@@ -86,3 +86,17 @@ impl Mod for Replay {
 
 Do not replay the same event recursively without a guard; keep a flag in your
 mod or a `Global`.
+
+To press a key from a *later* callback, keep the 16 bytes and call
+`replay_button_live`. It first checks that the event's context still looks like a
+live app object, so a feature can undo a page mode the app changed while a native
+command ran without dereferencing a stale object:
+
+```rust
+// SAFETY: `bytes` came from the page that is still up, and this runs on its UI
+// thread; the SDK re-checks the context before calling the app.
+let _ = unsafe { mpc_sample_sdk::event::replay_button_live(&bytes, mpc_sample_sdk::event::button::CHOP) };
+```
+
+The check proves the vtable belongs to the app image, not which object it is, so
+only replay events captured on the page that is current now.

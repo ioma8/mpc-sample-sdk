@@ -98,3 +98,9 @@ last painted component.
 
 If you start a worker, call `draw::repaint_painted()` when it finishes so an
 idle UI notices the result.
+
+A single request is not enough when the app is busy (loading a sample, running a
+native command): it can drop or coalesce the repaint, and a job whose completion
+is only consumed on the paint hook then waits forever. While a job is pending,
+return its component from the pump function on every tick instead of only when a
+flag is set, so a dropped frame is retried 60 ms later.

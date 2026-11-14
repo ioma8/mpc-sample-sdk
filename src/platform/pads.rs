@@ -173,6 +173,14 @@ pub fn sample_for_pad(surface: usize, pad: i32) -> Option<usize> {
         .filter(|sample| *sample != 0)
 }
 
+/// Whether a pad has no sample, or `None` if its state cannot be read.
+#[must_use]
+pub fn pad_is_empty(surface: usize, pad: i32) -> Option<bool> {
+    let layer = layer_for_pad(surface, pad)?;
+    let slot = super::descent::Layers::at(layer).sample_slot()?;
+    image::read_u64(slot).map(|sample| sample == 0)
+}
+
 /// Enable or disable a populated pad's sample layer.
 ///
 /// Returns `false` if the pad table, layer, or memory write is unavailable. The
@@ -270,5 +278,40 @@ mod tests {
             test_memory::with(regions, || sample_for_pad(surface, 0)),
             Some(sample)
         );
+    }
+    #[test]
+    fn pad_emptiness_distinguishes_empty_occupied_and_unreadable() {
+        use crate::image::test_memory;
+        let (surface, array, state, layers) = (
+            0x0070_0000_usize,
+            0x0071_0000_usize,
+            0x0072_0000_usize,
+            0x0073_0000_usize,
+        );
+        let pointer = |value: usize| value.to_le_bytes().to_vec();
+        let base = vec![
+            (surface + SURFACE_PADS, pointer(array)),
+            (surface + SURFACE_PADS_END, pointer(array + 8)),
+            (array, pointer(state)),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET,
+                pointer(layers),
+            ),
+        ];
+        assert_eq!(
+            test_memory::with(base.clone(), || super::pad_is_empty(surface, 0)),
+            None
+        );
+        for (sample, expected) in [(0, true), (0x0074_0000, false)] {
+            let mut regions = base.clone();
+            regions.push((
+                layers + crate::platform::descent::LAYERS_SAMPLE_OFFSET,
+                pointer(sample),
+            ));
+            assert_eq!(
+                test_memory::with(regions, || super::pad_is_empty(surface, 0)),
+                Some(expected)
+            );
+        }
     }
 }

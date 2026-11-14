@@ -410,7 +410,9 @@ fn write_u64(address: usize, value: u64) -> bool {
 /// Call on the UI thread with live matching Sample-page and state objects in
 /// the validated firmware. No other code may mutate their sample/program until
 /// the native operation completes. Native writer callbacks must run synchronously
-/// on the command executor thread and consume each block before returning.
+/// on the command executor thread and consume each block before returning. For
+/// generated audio, the most recently observed sample service must also remain
+/// live on that thread.
 ///
 /// With a buffer the writer substitutes it; without one the app copies its own
 /// range. The tested firmware executes the native command synchronously. The

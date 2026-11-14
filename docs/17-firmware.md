@@ -28,7 +28,7 @@ mpc_sample_sdk::export_mod!(ModType);
 which:
 
 1. finds the app's image,
-2. checks the 59 firmware words,
+2. checks the firmware instruction fingerprints,
 3. installs the hook sites,
 4. calls `on_start`.
 

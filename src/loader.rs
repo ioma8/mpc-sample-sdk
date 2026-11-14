@@ -7,7 +7,7 @@
 use core::cell::Cell;
 use core::fmt;
 
-use crate::event::{AudioHooks, Mod};
+use crate::event::{AudioHooks, InputHooks, Mod};
 use crate::image::{self, Firmware};
 use crate::sites;
 
@@ -45,6 +45,8 @@ static MODULE: std::sync::OnceLock<std::sync::Mutex<&'static mut dyn Mod>> =
 /// module mutex, so a slow UI callback (Extract, a file write, a paint) can
 /// never drop an audio block.
 static AUDIO: std::sync::OnceLock<AudioHooks> = std::sync::OnceLock::new();
+/// Independent live-input callbacks.
+static INPUT: std::sync::OnceLock<InputHooks> = std::sync::OnceLock::new();
 
 thread_local! {
     /// Whether this thread is already inside a mod callback.
@@ -88,6 +90,12 @@ pub fn with_mod<R>(f: impl FnOnce(&mut dyn Mod) -> R) -> Option<R> {
 #[must_use]
 pub fn audio_hooks() -> AudioHooks {
     AUDIO.get().copied().unwrap_or_default()
+}
+
+/// The independent live-input callbacks, if installed.
+#[must_use]
+pub fn input_hooks() -> InputHooks {
+    INPUT.get().copied().unwrap_or_default()
 }
 
 /// Run `f` if no other UI callback owns the module.
@@ -153,7 +161,9 @@ pub unsafe fn install(module: &'static mut dyn Mod) -> Result<(), InstallError> 
         return Err(InstallError::NoHooks);
     }
     let hooks = module.audio();
+    let input = module.input();
     let _ = AUDIO.set(hooks);
+    let _ = INPUT.set(input);
     module.on_start();
     let _ = MODULE.set(std::sync::Mutex::new(module));
     Ok(())

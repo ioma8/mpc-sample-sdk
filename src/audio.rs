@@ -256,43 +256,46 @@ pub unsafe fn stream_geometry(pcm: usize) -> Option<StreamGeometry> {
     if unsafe { (alsa.malloc)(core::ptr::from_mut(&mut params)) } < 0 || params.is_null() {
         return None;
     }
-    let mut geometry = StreamGeometry::default();
     // SAFETY: the handle is live and `params` is ours.
-    if unsafe { (alsa.current)(pcm as *mut libc::c_void, params) } >= 0 {
-        let mut size = 0_u64;
-        // SAFETY: see above.
-        if unsafe { (alsa.bufsize)(params, core::ptr::from_mut(&mut size)) } >= 0
-            && size < DEVICE_MAX_FRAMES
-        {
-            geometry.buffer = u32::try_from(size).unwrap_or(0);
-        }
-        let mut size = 0_u64;
-        let mut direction = 0_i32;
-        // SAFETY: see above.
-        if unsafe {
-            (alsa.period)(
-                params,
-                core::ptr::from_mut(&mut size),
-                core::ptr::from_mut(&mut direction),
-            )
-        } >= 0
-            && size < DEVICE_MAX_FRAMES
-        {
-            geometry.period = u32::try_from(size).unwrap_or(0);
-        }
-        let mut count = 0_u32;
-        // SAFETY: see above.
-        if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
-            && count > 0
-            && count as usize <= DEVICE_MAX_CHANNELS
-        {
-            geometry.channels = count;
-        }
-        let mut format = -1;
-        // SAFETY: see above.
-        let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
-        geometry.s32 = known && format == FORMAT_S32_LE;
+    if unsafe { (alsa.current)(pcm as *mut libc::c_void, params) } < 0 {
+        // SAFETY: the parameters came from the malloc above.
+        unsafe { (alsa.free)(params) };
+        return None;
     }
+    let mut geometry = StreamGeometry::default();
+    let mut size = 0_u64;
+    // SAFETY: the handle is live and `params` is ours.
+    if unsafe { (alsa.bufsize)(params, core::ptr::from_mut(&mut size)) } >= 0
+        && size < DEVICE_MAX_FRAMES
+    {
+        geometry.buffer = u32::try_from(size).unwrap_or(0);
+    }
+    let mut size = 0_u64;
+    let mut direction = 0_i32;
+    // SAFETY: see above.
+    if unsafe {
+        (alsa.period)(
+            params,
+            core::ptr::from_mut(&mut size),
+            core::ptr::from_mut(&mut direction),
+        )
+    } >= 0
+        && size < DEVICE_MAX_FRAMES
+    {
+        geometry.period = u32::try_from(size).unwrap_or(0);
+    }
+    let mut count = 0_u32;
+    // SAFETY: see above.
+    if unsafe { (alsa.channels)(params, core::ptr::from_mut(&mut count)) } >= 0
+        && count > 0
+        && count as usize <= DEVICE_MAX_CHANNELS
+    {
+        geometry.channels = count;
+    }
+    let mut format = -1;
+    // SAFETY: see above.
+    let known = unsafe { (alsa.format)(params, core::ptr::from_mut(&mut format)) } >= 0;
+    geometry.s32 = known && format == FORMAT_S32_LE;
     // SAFETY: the parameters came from the malloc above.
     unsafe { (alsa.free)(params) };
     Some(geometry)

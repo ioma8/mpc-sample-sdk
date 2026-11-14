@@ -59,6 +59,10 @@ struct Format {
 
 impl Info {
     /// Read the header of `path`.
+    ///
+    /// The declared RIFF size is checked only for sanity: the app's own writer
+    /// appends `atem`, `slic` and `meta` after the audio without growing it, so
+    /// the file bounds the chunk walk instead of that field.
     #[must_use]
     pub fn read(path: &Path) -> Option<Self> {
         let file = File::open(path).ok()?;
@@ -140,14 +144,19 @@ fn scan(file: &File) -> Option<(Format, u64, u32)> {
         return None;
     }
     let riff_end = u64::from(u32::from_le_bytes(header[4..8].try_into().ok()?)) + 8;
-    if riff_end < 12 || riff_end > file.metadata().ok()?.len() {
+    if riff_end < 12 {
         return None;
     }
+    // The app's own writer leaves the RIFF size short: it appends `atem`,
+    // `slic` and `meta` after the audio without growing the declared size, so
+    // the file, not the header field, bounds the chunk walk. A chunk that does
+    // not fit the file at all is still refused.
+    let end = file.metadata().ok()?.len();
     let mut format: Option<Format> = None;
     let mut data: Option<(u64, u32)> = None;
     let mut offset = 12_u64;
     for _ in 0..MAX_CHUNKS {
-        if offset.checked_add(8)? > riff_end {
+        if offset.checked_add(8)? > end {
             break;
         }
         let mut chunk = [0_u8; 8];
@@ -155,7 +164,7 @@ fn scan(file: &File) -> Option<(Format, u64, u32)> {
             break;
         }
         let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-        if offset.checked_add(8)?.checked_add(u64::from(size))? > riff_end {
+        if offset.checked_add(8)?.checked_add(u64::from(size))? > end {
             return None;
         }
         if &chunk[0..4] == b"fmt " && (16..=MAX_FORMAT_CHUNK).contains(&size) {
@@ -359,6 +368,23 @@ mod tests {
                 super::scaled_sample(&(value as f32).to_le_bytes(), 4, Encoding::Float)
             );
         }
+    }
+
+    #[test]
+    fn a_riff_size_short_of_the_appended_chunks_still_reads() {
+        // The app writes the RIFF size before appending its metadata chunks, so
+        // the declared size can stop before the data chunk. The file bounds the
+        // walk, not that field.
+        let path = write_wav("stale-riff", false, 1, 2, 44_100, 24, &[0; 120]);
+        let mut bytes = std::fs::read(&path).expect("read wav");
+        let short = u32::try_from(bytes.len() - 48).expect("size");
+        bytes[4..8].copy_from_slice(&(short - 8).to_le_bytes());
+        std::fs::write(&path, &bytes).expect("write wav");
+        let info = Info::read(&path).expect("a short RIFF size is tolerated");
+        assert_eq!(info.frames, 20);
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.width, 3);
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
     }
 
     #[test]

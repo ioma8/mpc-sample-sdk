@@ -14,7 +14,7 @@ pub fn frames(sample: usize) -> u32 {
     descent::geometry(sample).map_or(0, |geometry| geometry.frames)
 }
 
-/// `[sample + 0x170]` is the object that holds the audio in memory.
+/// `[sample + 0x170]` is the object that holds the audio (in memory or on disk).
 const SAMPLE_HOLDER: usize = 0x170;
 /// `[holder + 0x18]` points back at the sample's metadata block.
 const HOLDER_BACK: usize = 0x18;
@@ -40,6 +40,13 @@ pub struct Memory {
     pub channels: u16,
     /// Sample rate.
     pub rate: u32,
+}
+
+/// The object a sample keeps its audio in: a `MemorySample` for loaded audio, a
+/// `DiskSample` for a streamed one.
+#[must_use]
+pub(crate) fn holder(sample: usize) -> Option<usize> {
+    image::read_pointer(sample.checked_add(SAMPLE_HOLDER)?)
 }
 
 /// Whether the object's class name (without the length prefix) is `want`.
@@ -75,7 +82,7 @@ fn class_is(object: usize, want: &str) -> bool {
 #[must_use]
 pub fn memory(sample: usize) -> Option<Memory> {
     let metadata = descent::metadata_block(sample)?;
-    let holder = image::read_pointer(sample.checked_add(SAMPLE_HOLDER)?)?;
+    let holder = holder(sample)?;
     if !class_is(holder, "MemorySample") {
         return None;
     }
@@ -166,12 +173,47 @@ const RELEASE_SHARED: usize = crate::firmware::RELEASE_SHARED.offset;
 /// the seed, because Extract's range may not exceed the source sample.
 const SEED_FRAMES: u32 = 66_150;
 static SERVICE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static SERVICE_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static LIFECYCLE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 // The app can retain references after Extract; keep one seed alive until process exit.
-static SEED: std::sync::OnceLock<Seed> = std::sync::OnceLock::new();
+static SEED: std::sync::OnceLock<(u64, Seed)> = std::sync::OnceLock::new();
 static SEED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub(crate) fn set_lifecycle_ready(ready: bool) {
+    LIFECYCLE_READY.store(ready, core::sync::atomic::Ordering::Release);
+}
+
+fn observe_service(
+    address: &core::sync::atomic::AtomicUsize,
+    generation: &core::sync::atomic::AtomicU64,
+    service: usize,
+) {
+    use core::sync::atomic::Ordering;
+    address.store(0, Ordering::Release);
+    generation.fetch_add(1, Ordering::AcqRel);
+    address.store(service, Ordering::Release);
+}
+
+fn invalidate_service(
+    address: &core::sync::atomic::AtomicUsize,
+    generation: &core::sync::atomic::AtomicU64,
+    service: usize,
+) {
+    use core::sync::atomic::Ordering;
+    if address
+        .compare_exchange(service, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        generation.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 pub(crate) fn remember_service(service: usize) {
-    SERVICE.store(service, core::sync::atomic::Ordering::Release);
+    observe_service(&SERVICE, &SERVICE_GENERATION, service);
+}
+
+pub(crate) fn forget_service(service: usize) {
+    invalidate_service(&SERVICE, &SERVICE_GENERATION, service);
 }
 
 /// One owning reference to a real, unregistered native sample.
@@ -207,20 +249,38 @@ impl Drop for Seed {
 }
 
 /// Build a silent stereo sample to supply the stock Extract command.
+///
+/// # Safety
+/// The most recently observed sample service must still be live, and this call
+/// must run on its owning thread. The firmware does not expose its lifetime.
 #[must_use]
-pub fn silent_seed() -> Option<&'static Seed> {
-    if let Some(seed) = SEED.get() {
-        return Some(seed);
+pub unsafe fn silent_seed() -> Option<&'static Seed> {
+    use core::sync::atomic::Ordering;
+    if !LIFECYCLE_READY.load(Ordering::Acquire) || SERVICE.load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    let generation = SERVICE_GENERATION.load(Ordering::Acquire);
+    if let Some((stored, seed)) = SEED.get() {
+        // One seed lives for the life of the process, so a seed built for an
+        // earlier service cannot be replaced. Report the feature as unavailable
+        // rather than return an object tied to a destroyed service.
+        return (*stored == generation).then_some(seed);
     }
     let _guard = SEED_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(seed) = SEED.get() {
-        return Some(seed);
+    if let Some((stored, seed)) = SEED.get() {
+        return (*stored == generation).then_some(seed);
     }
     let seed = build_seed()?;
-    let _ = SEED.set(seed);
+    if SERVICE_GENERATION.load(Ordering::Acquire) != generation
+        || SERVICE.load(Ordering::Acquire) == 0
+    {
+        return None;
+    }
+    let _ = SEED.set((generation, seed));
     SEED.get()
+        .and_then(|(stored, seed)| (*stored == generation).then_some(seed))
 }
 
 fn build_seed() -> Option<Seed> {
@@ -266,8 +326,52 @@ mod tests {
     use super::descent;
 
     #[test]
+    fn service_lifecycle_rejects_stale_destructors_and_pointer_reuse() {
+        use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        let address = AtomicUsize::new(0);
+        let generation = AtomicU64::new(0);
+        super::observe_service(&address, &generation, 0x1000);
+        let first = generation.load(Ordering::Acquire);
+        super::observe_service(&address, &generation, 0x2000);
+        super::invalidate_service(&address, &generation, 0x1000);
+        assert_eq!(address.load(Ordering::Acquire), 0x2000);
+        super::invalidate_service(&address, &generation, 0x2000);
+        assert_eq!(address.load(Ordering::Acquire), 0);
+        super::observe_service(&address, &generation, 0x1000);
+        assert_ne!(generation.load(Ordering::Acquire), first);
+    }
+
+    #[test]
     fn a_seed_is_unavailable_without_the_app_service() {
-        assert!(super::silent_seed().is_none());
+        // SAFETY: no service has been recorded in this host test.
+        assert!(unsafe { super::silent_seed() }.is_none());
+    }
+
+    #[test]
+    fn a_seed_from_an_earlier_service_is_refused() {
+        use core::sync::atomic::Ordering;
+        // SAFETY: a host-only seed with no owning reference, so `Drop` is a
+        // no-op; this test owns the sample globals while it runs.
+        let _ = super::SEED.set((
+            0,
+            super::Seed {
+                sample: 1,
+                owner: 0,
+                holder: 2,
+            },
+        ));
+        super::LIFECYCLE_READY.store(true, Ordering::Release);
+        super::SERVICE.store(0x1000, Ordering::Release);
+        super::SERVICE_GENERATION.store(1, Ordering::Release);
+        // SAFETY: the stored seed belongs to generation zero and no other
+        // thread touches the sample globals in this test.
+        let stale = unsafe { super::silent_seed() };
+        assert!(
+            stale.is_none(),
+            "a seed from a destroyed service must not be returned"
+        );
+        super::SERVICE.store(0, Ordering::Release);
+        super::SERVICE_GENERATION.store(0, Ordering::Release);
     }
 
     #[test]

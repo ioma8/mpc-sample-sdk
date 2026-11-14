@@ -193,6 +193,33 @@ pub struct AudioHooks {
     pub input_planar: Option<InputPlanar>,
 }
 
+/// A pad decision and an optional token to finish after native forwarding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadResponse {
+    /// Whether the SDK should pass this event to the firmware.
+    pub flow: Flow,
+    /// Opaque value returned to `pad_complete`; zero means no completion.
+    pub token: u64,
+}
+
+/// Independent live input callbacks, called without the UI module lock.
+///
+/// These callbacks may run concurrently or re-enter. They must keep their own
+/// bounded, nonblocking state and must not access the mod's UI-owned fields.
+/// When present they replace the corresponding `Mod` callback.
+#[derive(Clone, Copy, Default)]
+pub struct InputHooks {
+    /// Hardware pad press and release decisions.
+    pub pad: Option<fn(PadEvent) -> PadResponse>,
+    /// Complete a nonzero pad token after the native handler has returned.
+    /// The boolean says whether the native handler was actually called.
+    pub pad_complete: Option<fn(PadEvent, u64, bool)>,
+    /// Control-surface pad and pressure events.
+    pub surface: Option<fn(SurfaceEvent) -> Flow>,
+    /// MIDI note decisions, including any in-place replay.
+    pub note: Option<fn(&mut NoteEvent<'_>) -> Flow>,
+}
+
 /// A mod built on this SDK.
 ///
 /// Every method has a default, so a mod overrides only what it needs.  The SDK
@@ -252,6 +279,14 @@ pub trait Mod: Send + 'static {
     /// whether it was the Sample page.
     fn on_paint(&mut self, _graphics: &mut Graphics, _event: PaintEvent) {}
 
+    /// Independent callbacks for time-sensitive input, copied at installation.
+    ///
+    /// These callbacks run without the UI lock; implementations must synchronize
+    /// shared state without blocking, including when hooks run concurrently.
+    fn input(&self) -> InputHooks {
+        InputHooks::default()
+    }
+
     /// The audio-side hooks, called on the audio thread without the module lock.
     ///
     /// They are copied out once at install; return only functions that read and
@@ -308,6 +343,36 @@ fn buttons_original() -> Option<unsafe extern "C" fn(usize)> {
     crate::sites::originals().buttons
 }
 
+/// Replay one key press/release on a button event captured on the current page.
+///
+/// Unlike [`replay_button`] this may run in a later callback, for example to
+/// undo a page mode the app changed while a command ran. It first checks that
+/// the event's context still looks like a live app object; the caller must
+/// still ensure the event came from the page that is up now.
+///
+/// Returns false when the event has no context, the context is not a live app
+/// object, or the button hook is missing.
+///
+/// # Safety
+///
+/// `event` must be the first 16 bytes of a button event the app dispatched on
+/// the page that is current now, and this must run on that page's UI thread.
+#[must_use]
+pub unsafe fn replay_button_live(event: &[u8; 16], key: u8) -> bool {
+    let Ok(word) = <[u8; 8]>::try_from(&event[..8]) else {
+        return false;
+    };
+    let Ok(context) = usize::try_from(u64::from_le_bytes(word)) else {
+        return false;
+    };
+    if !crate::image::is_app_object(context) {
+        return false;
+    }
+    // SAFETY: the caller guarantees the event belongs to the current page and
+    // the context check above proved it is still a live app object.
+    unsafe { replay_button(event, key) }
+}
+
 /// Replay one key press/release on a captured button event.
 ///
 /// Returns false when no event was captured or the button hook is missing.
@@ -316,7 +381,8 @@ fn buttons_original() -> Option<unsafe extern "C" fn(usize)> {
 ///
 /// `event` must be the first 16 bytes of a button event captured during the
 /// current callback, whose context and surface are still live.  Replaying it
-/// later would dereference a stale app object.
+/// later would dereference a stale app object.  A caller that keeps an event
+/// across callbacks must use [`replay_button_live`], which checks the context.
 #[must_use]
 pub unsafe fn replay_button(event: &[u8; 16], key: u8) -> bool {
     let Some(original) = buttons_original() else {

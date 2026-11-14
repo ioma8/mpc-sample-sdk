@@ -219,6 +219,23 @@ pub fn read_pointer(address: usize) -> Option<usize> {
         .map(|value| value as usize)
 }
 
+/// How far past the load address the app's code and vtables can point.
+const IMAGE_SPAN: usize = 0x1200_0000;
+
+/// Whether `object` looks like a live app object: its first word is a vtable
+/// inside the loaded image.
+///
+/// This is the liveness check the SDK uses before calling through a native
+/// object it did not just receive as a callback argument. It proves the vtable
+/// is the app's, not that the object is the one the caller meant.
+#[must_use]
+pub fn is_app_object(object: usize) -> bool {
+    let base = base();
+    object != 0
+        && base != 0
+        && read_pointer(object).is_some_and(|vtable| (base..=base + IMAGE_SPAN).contains(&vtable))
+}
+
 /// The parts that only exist on the device's platform.
 ///
 /// The host builds (tests, clippy) must still compile, so the Linux-only

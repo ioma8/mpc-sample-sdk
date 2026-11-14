@@ -132,7 +132,8 @@ fn capture_empty_pads(borrow: &mut Borrow, surface: usize) {
 /// Borrow a native silent seed for Extract.
 ///
 /// # Safety
-/// The screen and surface must remain live on the owning UI thread until cleanup.
+/// The screen, surface, and most recently observed sample service must remain
+/// live on their owning UI thread until cleanup.
 #[must_use]
 pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
     let mut borrow = borrow_state();
@@ -143,7 +144,8 @@ pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
     let slot = State::at(state).layers()?.sample_slot()?;
     let old_sample = image::read_u64(slot)?;
     let old_holder = image::read_u64(slot + layout::HOLDER_FROM_SAMPLE)?;
-    let seed = sample::silent_seed()?;
+    // SAFETY: the caller guarantees the sample service is live on its owning thread.
+    let seed = unsafe { sample::silent_seed() }?;
     let frames = seed.frames();
     capture_empty_pads(&mut borrow, control::surface());
     if !write_slot(slot, seed.sample() as u64) {

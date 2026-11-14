@@ -141,7 +141,9 @@ impl Selection {
 
     /// Whether this exact source is still the selected, visible Sample page.
     #[must_use]
-    pub fn is_current(&self) -> bool {
+    /// # Safety
+    /// The page must remain live and this must run on its owning UI thread.
+    pub unsafe fn is_current(&self) -> bool {
         // SAFETY: `screen` came from a validated selection and this sample is a
         // live app object while the mod handles the callback.
         if self.screen == 0 || !unsafe { super::page::visible(self.screen) } {
@@ -162,12 +164,17 @@ impl Selection {
     ///
     /// Returns why the audio is unavailable: the selection is stale, there is no
     /// exact path, the decode failed, or the length does not match.
-    pub fn read_current(&self) -> Result<Vec<f32>, AudioReadError> {
-        if !self.is_current() {
+    /// # Safety
+    /// The page and sample must remain live throughout the read, which must run
+    /// on their owning UI thread.
+    pub unsafe fn read_current(&self) -> Result<Vec<f32>, AudioReadError> {
+        // SAFETY: the caller guarantees the page is live on its UI thread.
+        if !unsafe { self.is_current() } {
             return Err(AudioReadError::Stale);
         }
         let audio = self.copy_audio()?;
-        if !self.is_current() {
+        // SAFETY: the caller guarantees the page remains live.
+        if !unsafe { self.is_current() } {
             return Err(AudioReadError::Stale);
         }
         Ok(audio)

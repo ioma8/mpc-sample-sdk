@@ -58,10 +58,14 @@ pub(crate) struct Originals {
     pub(crate) control: Option<control::SetControl>,
     pub(crate) sample_service: Option<unsafe extern "C" fn(usize, usize, usize, usize, usize)>,
     pub(crate) lighting: Option<unsafe extern "C" fn(usize, *mut u64, u8)>,
+    pub(crate) sample_service_dtor: Option<unsafe extern "C" fn(usize)>,
+    pub(crate) sample_service_delete: Option<unsafe extern "C" fn(usize)>,
+    pub(crate) lighting_dtor: Option<unsafe extern "C" fn(usize)>,
+    pub(crate) lighting_delete: Option<unsafe extern "C" fn(usize)>,
 }
 
 /// The trampolines `hook::prepare` returned, in table order.
-const SITES: usize = 18;
+const SITES: usize = 22;
 
 impl Originals {
     /// Type each prepared trampoline by the signature of its site.
@@ -92,6 +96,10 @@ impl Originals {
                 control: typed(trampolines[15]),
                 sample_service: typed(trampolines[16]),
                 lighting: typed(trampolines[17]),
+                sample_service_dtor: typed(trampolines[18]),
+                sample_service_delete: typed(trampolines[19]),
+                lighting_dtor: typed(trampolines[20]),
+                lighting_delete: typed(trampolines[21]),
             }
         }
     }
@@ -161,12 +169,22 @@ pub(crate) unsafe fn install(base: usize) -> bool {
         extract::record(originals().extract_ctor, originals().extract_exec);
         control::record(originals().control);
     }
+    sample::set_lifecycle_ready(
+        originals().sample_service.is_some()
+            && originals().sample_service_dtor.is_some()
+            && originals().sample_service_delete.is_some(),
+    );
+    crate::platform::lighting::set_lifecycle_ready(
+        originals().lighting.is_some()
+            && originals().lighting_dtor.is_some()
+            && originals().lighting_delete.is_some(),
+    );
     install_paint(base);
     committed
 }
 
 /// The site table, in install order.
-fn table() -> [Site; 18] {
+fn table() -> [Site; SITES] {
     [
         Site {
             offset: crate::firmware::SIXTEEN_CTOR.offset,
@@ -240,6 +258,22 @@ fn table() -> [Site; 18] {
             offset: crate::firmware::LIGHTING.offset,
             handler: lighting as *const (),
         },
+        Site {
+            offset: crate::firmware::SAMPLE_SERVICE_DTOR.offset,
+            handler: sample_service_dtor as *const (),
+        },
+        Site {
+            offset: crate::firmware::SAMPLE_SERVICE_DELETE.offset,
+            handler: sample_service_delete as *const (),
+        },
+        Site {
+            offset: crate::firmware::LIGHTING_DTOR.offset,
+            handler: lighting_dtor as *const (),
+        },
+        Site {
+            offset: crate::firmware::LIGHTING_DELETE.offset,
+            handler: lighting_delete as *const (),
+        },
     ]
 }
 
@@ -259,16 +293,49 @@ unsafe extern "C" fn lighting(sender: usize, light: *mut u64, pad: u8) {
         unsafe { *light }
     };
     crate::platform::lighting::observe(sender, pad, native);
-    if !light.is_null()
-        && let Some(lit) = crate::platform::lighting::override_light(pad)
-    {
-        // SAFETY: the callback owns this temporary PadLight.
-        unsafe { *light = lit };
-    }
-    // SAFETY: site 17 is the app's lighting callback; forward its arguments.
     if let Some(forward) = originals().lighting {
-        // SAFETY: forwards the app's callback arguments unchanged.
-        unsafe { forward(sender, light, pad) };
+        if light.is_null() {
+            // SAFETY: forward exactly the null pointer supplied by the app.
+            unsafe { forward(sender, light, pad) };
+        } else {
+            // SAFETY: the app supplies its live, exclusively writable value.
+            let value = unsafe { &mut *light };
+            with_light_override(
+                value,
+                crate::platform::lighting::override_light(pad),
+                |value| {
+                    // SAFETY: sender and light came from this native callback.
+                    unsafe { forward(sender, core::ptr::from_mut(value), pad) };
+                },
+            );
+        }
+    }
+}
+
+/// Forward the override without changing the app's retained native light.
+fn with_light_override(value: &mut u64, replacement: Option<u64>, forward: impl FnOnce(&mut u64)) {
+    let original = *value;
+    if let Some(replacement) = replacement {
+        *value = replacement;
+    }
+    forward(value);
+    *value = original;
+}
+
+/// Invalidate the sender before either native destructor tears it down.
+unsafe extern "C" fn lighting_dtor(sender: usize) {
+    crate::platform::lighting::forget_sender(sender);
+    if let Some(forward) = originals().lighting_dtor {
+        // SAFETY: the firmware supplied this object to its original destructor.
+        unsafe { forward(sender) };
+    }
+}
+
+unsafe extern "C" fn lighting_delete(sender: usize) {
+    crate::platform::lighting::forget_sender(sender);
+    if let Some(forward) = originals().lighting_delete {
+        // SAFETY: the firmware supplied this object to its original destructor.
+        unsafe { forward(sender) };
     }
 }
 
@@ -285,6 +352,24 @@ unsafe extern "C" fn sample_service_ctor(
         // SAFETY: this forwards the original constructor arguments unchanged.
         unsafe { forward(service, first, second, third, fourth) };
         sample::remember_service(service);
+    }
+}
+
+/// Invalidate the observed service before the firmware destroys it.
+unsafe extern "C" fn sample_service_dtor(service: usize) {
+    sample::forget_service(service);
+    if let Some(forward) = originals().sample_service_dtor {
+        // SAFETY: the firmware supplied this object to its original destructor.
+        unsafe { forward(service) };
+    }
+}
+
+/// The deleting destructor has a separate inlined body on this firmware.
+unsafe extern "C" fn sample_service_delete(service: usize) {
+    sample::forget_service(service);
+    if let Some(forward) = originals().sample_service_delete {
+        // SAFETY: the firmware supplied this object to its original destructor.
+        unsafe { forward(service) };
     }
 }
 
@@ -339,6 +424,28 @@ unsafe extern "C" fn data(surface: usize, delta: i32) {
     }
 }
 
+/// Dispatch a pad event and complete its token after native forwarding.
+fn dispatch_pad(
+    hooks: event::InputHooks,
+    event: PadEvent,
+    fallback: impl FnOnce(PadEvent) -> Flow,
+    forward: impl FnOnce() -> bool,
+) {
+    let response = hooks.pad.map_or_else(
+        || event::PadResponse {
+            flow: fallback(event),
+            token: 0,
+        },
+        |handle| handle(event),
+    );
+    let sent = response.flow == Flow::Forward && forward();
+    if response.token != 0
+        && let Some(complete) = hooks.pad_complete
+    {
+        complete(event, response.token, sent);
+    }
+}
+
 /// A pad press: let the mod decide, then forward.
 ///
 /// # Safety
@@ -359,15 +466,20 @@ unsafe extern "C" fn note_on(
         properties,
         velocity,
     };
-    let flow = decide(|module| module.on_pad(event));
-    if flow == Flow::Forward {
-        // SAFETY: the original is the app's own handler.
-        unsafe {
+    dispatch_pad(
+        crate::loader::input_hooks(),
+        event,
+        |event| decide(|module| module.on_pad(event)),
+        || {
             if let Some(forward) = originals().note_on {
-                forward(input, source, pad, properties, velocity);
+                // SAFETY: the firmware supplied these arguments to this hook.
+                unsafe { forward(input, source, pad, properties, velocity) };
+                true
+            } else {
+                false
             }
-        }
-    }
+        },
+    );
 }
 
 /// A control-surface event: let the mod decide, then forward.
@@ -386,7 +498,10 @@ unsafe extern "C" fn surface(surface: usize, code: i32, payload: usize) {
         note: if decoded { raw[1] } else { 0 },
         velocity: if decoded { raw[2] } else { 0 },
     };
-    let flow = decide(|module| module.on_surface(event));
+    let flow = crate::loader::input_hooks().surface.map_or_else(
+        || decide(|module| module.on_surface(event)),
+        |handler| handler(event),
+    );
     if flow == Flow::Forward {
         // SAFETY: the original is the app's own handler.
         unsafe {
@@ -411,15 +526,20 @@ unsafe extern "C" fn note_off(input: usize, source: i32, pad: i32) {
         properties: 0,
         velocity: 0.0,
     };
-    let flow = decide(|module| module.on_pad(event));
-    if flow == Flow::Forward {
-        // SAFETY: the original is the app's own handler.
-        unsafe {
+    dispatch_pad(
+        crate::loader::input_hooks(),
+        event,
+        |event| decide(|module| module.on_pad(event)),
+        || {
             if let Some(forward) = originals().note_off {
-                forward(input, source, pad);
+                // SAFETY: the firmware supplied these arguments to this hook.
+                unsafe { forward(input, source, pad) };
+                true
+            } else {
+                false
             }
-        }
-    }
+        },
+    );
 }
 
 /// A control change: let the mod decide, then forward.
@@ -594,7 +714,11 @@ unsafe extern "C" fn note(app: usize, context: usize, event: *mut u8, source: us
     };
     // SAFETY: the site supplies the app's own displaced pitch setter.
     let mut message = unsafe { NoteEvent::new(app, context, storage, source as u64, pitch_off) };
-    let flow = decide(|module| module.on_note(&mut message));
+    let flow = if let Some(handler) = crate::loader::input_hooks().note {
+        handler(&mut message)
+    } else {
+        decide(|module| module.on_note(&mut message))
+    };
     match flow {
         Flow::Forward if message.is_replayed() => {
             // SAFETY: the original is the app's own dispatcher.
@@ -715,8 +839,53 @@ mod tests {
     use super::{notes_ready, table};
 
     #[test]
+    fn independent_pad_hook_completes_after_native_forwarding() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static ORDER: AtomicUsize = AtomicUsize::new(0);
+        let event = crate::PadEvent {
+            action: crate::PadAction::Press,
+            input: 1,
+            source: 2,
+            pad: 3,
+            properties: 0,
+            velocity: 0.5,
+        };
+        let hooks = crate::InputHooks {
+            pad: Some(|_| crate::PadResponse {
+                flow: crate::Flow::Forward,
+                token: 7,
+            }),
+            pad_complete: Some(|_, token, sent| {
+                assert_eq!(token, 7);
+                assert!(sent);
+                assert_eq!(ORDER.load(Ordering::Acquire), 1);
+                ORDER.store(2, Ordering::Release);
+            }),
+            ..crate::InputHooks::default()
+        };
+        ORDER.store(0, Ordering::Release);
+        super::dispatch_pad(
+            hooks,
+            event,
+            |_| panic!("UI fallback used"),
+            || {
+                ORDER.store(1, Ordering::Release);
+                true
+            },
+        );
+        assert_eq!(ORDER.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn lighting_override_does_not_replace_the_native_value() {
+        let mut native = 42_u64;
+        super::with_light_override(&mut native, Some(99), |sent| assert_eq!(*sent, 99));
+        assert_eq!(native, 42);
+    }
+
+    #[test]
     fn the_table_has_one_entry_per_site() {
-        assert_eq!(table().len(), 18);
+        assert_eq!(table().len(), 22);
         assert!(!notes_ready());
     }
 }

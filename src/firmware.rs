@@ -72,7 +72,7 @@ const PACIASP: u32 = 0xd503_233f;
 /// `bti c`, the landing pad at the start of an indirect target.
 const BTI_C: u32 = 0xd503_245f;
 
-// --- Hooks: the 18 sites the SDK patches, in install order. ---
+// --- Hooks: the 22 sites the SDK patches, in install order. ---
 
 pub(crate) const SIXTEEN_CTOR: Entry = hook(0x0154_5a50, PACIASP);
 pub(crate) const SIXTEEN_PROC: Entry = hook(0x0214_72f0, PACIASP);
@@ -94,6 +94,14 @@ pub(crate) const NOTE: Entry = hook(0x0211_b090, PACIASP);
 pub(crate) const CONTROL: Entry = hook(0x0196_8020, PACIASP);
 pub(crate) const SAMPLE_SERVICE_CTOR: Entry = hook(0x01df_3330, PACIASP);
 pub(crate) const LIGHTING: Entry = hook(0x0159_f910, PACIASP);
+/// The two destructor variants in the Temporary Samples service vtable.
+pub(crate) const SAMPLE_SERVICE_DTOR: Entry = hook(0x01df_6d40, PACIASP);
+pub(crate) const SAMPLE_SERVICE_DELETE: Entry = hook(0x01df_6ed0, PACIASP);
+/// The two destructors from the active lighting sender's vtable.
+pub(crate) const LIGHTING_DTOR: Entry = hook(0x0143_9e60, PACIASP);
+pub(crate) const LIGHTING_DELETE: Entry = hook(0x0143_9fd0, PACIASP);
+/// Vtable of the sender whose destructor hooks are installed above.
+pub(crate) const LIGHTING_SENDER_VTABLE: Entry = data(0x06d8_fa60);
 
 // --- Calls: functions and data the SDK uses, recorded but not yet fingerprinted. ---
 
@@ -176,8 +184,8 @@ pub(crate) const GUARDS: [Entry; 20] = [
     probe(0x0294_1ff0, BTI_C),
 ];
 
-/// The 18 hook sites, in install order.
-pub(crate) const HOOKS: [Entry; 18] = [
+/// The 22 hook sites, in install order.
+pub(crate) const HOOKS: [Entry; 22] = [
     SIXTEEN_CTOR,
     SIXTEEN_PROC,
     DATA_HOOK,
@@ -196,6 +204,10 @@ pub(crate) const HOOKS: [Entry; 18] = [
     CONTROL,
     SAMPLE_SERVICE_CTOR,
     LIGHTING,
+    SAMPLE_SERVICE_DTOR,
+    SAMPLE_SERVICE_DELETE,
+    LIGHTING_DTOR,
+    LIGHTING_DELETE,
 ];
 
 /// Every entry with an instruction word, which the loader verifies.
