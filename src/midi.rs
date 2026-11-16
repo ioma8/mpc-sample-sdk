@@ -16,6 +16,8 @@ pub const ROW_ORIGIN: i32 = 60;
 pub const EXTERNAL_SOURCE_LIMIT: i32 = 0x7fff_ffef;
 /// A second external source id the firmware uses.
 pub const EXTERNAL_SOURCE_ALT: i32 = 0x7fff_fff6;
+/// External MIDI source id observed on the MPC Sample 1.3.0 emulator.
+pub const EXTERNAL_SOURCE_MPC_MIDI: u32 = 0x90b6_e9eb;
 /// The source id a replayed event carries, which the mod's own hook filters out.
 pub const REPLAY_SOURCE: u64 = 0x8000_0000;
 
@@ -65,8 +67,9 @@ pub fn decode(event: &[u8], source: u64) -> Note {
         .map_or(0.0, f32::from_le_bytes);
     let note = event.get(EVENT_NOTE).copied().unwrap_or(0xff);
     let source_id = source as u32;
-    let external =
-        source_id <= EXTERNAL_SOURCE_LIMIT as u32 || source_id == EXTERNAL_SOURCE_ALT as u32;
+    let external = source_id <= EXTERNAL_SOURCE_LIMIT as u32
+        || source_id == EXTERNAL_SOURCE_ALT as u32
+        || source_id == EXTERNAL_SOURCE_MPC_MIDI;
     let note_on = kind == PAD_EVENT && velocity > 0.0;
     let note_off =
         note <= 127 && ((kind == PAD_EVENT && velocity <= 0.0) || kind == NOTE_OFF_EVENT);
@@ -339,8 +342,8 @@ pub fn notes_ready() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        EXTERNAL_SOURCE_ALT, EXTERNAL_SOURCE_LIMIT, Note, NoteEvent, REPLAY_SOURCE, ROW_ORIGIN,
-        decode,
+        EXTERNAL_SOURCE_ALT, EXTERNAL_SOURCE_LIMIT, EXTERNAL_SOURCE_MPC_MIDI, Note, NoteEvent,
+        REPLAY_SOURCE, ROW_ORIGIN, decode,
     };
 
     fn event(kind: u8, velocity: f32, note: u8) -> [u8; 0x40] {
@@ -397,7 +400,9 @@ mod tests {
         assert!(decode(&sample, 0x10).external);
         assert!(decode(&sample, EXTERNAL_SOURCE_LIMIT as u64).external);
         assert!(decode(&sample, EXTERNAL_SOURCE_ALT as u64).external);
+        assert!(decode(&sample, u64::from(EXTERNAL_SOURCE_MPC_MIDI)).external);
         assert!(!decode(&sample, REPLAY_SOURCE).external);
+        assert!(!decode(&sample, 0x7fff_fffau64).external);
         assert!(!decode(&sample, u64::from(u32::MAX)).external);
     }
 

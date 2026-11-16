@@ -36,16 +36,19 @@ Start here if you have never built a mod:
 24. [API migration](24-safety-migration.md)
 25. [Pad lighting](25-lighting.md)
 
-Every page has a runnable-shaped example. The examples assume:
+Every page has a runnable-shaped example. The examples assume the published
+crate from [crates.io](https://crates.io/crates/mpc-sample-sdk):
 
 ```toml
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", branch = "main" }
-# Pin a reviewed commit or release tag in production.
+mpc-sample-sdk = "0.7"
 ```
+
+For an unreleased SDK change, use a Git dependency pinned to a reviewed commit
+or release tag.
 
 A mod is installed by `export_mod!`, built as a `cdylib`, and loaded with
 `LD_PRELOAD` on the device (or `lab.py preload` in the virtual lab).

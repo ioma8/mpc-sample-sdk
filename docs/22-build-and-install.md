@@ -11,6 +11,15 @@ not need its own copy.
 - `nm`, `llvm-objcopy`, `llvm-objdump`
 - `python3` and `zip` for the SD package
 
+Add the released SDK to the mod's `Cargo.toml` from crates.io:
+
+```toml
+[dependencies]
+mpc-sample-sdk = "0.7"
+```
+
+Use a Git dependency only when building against an unreleased SDK change.
+
 ## Build a `.so`
 
 From the SDK checkout:

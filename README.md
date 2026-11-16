@@ -58,12 +58,15 @@ The current checkout exposes hardware identifiers in `event::button` and `event:
 
 ## Install
 
-The crate is published from this repository:
+Install the published crate from [crates.io](https://crates.io/crates/mpc-sample-sdk):
 
 ```toml
 [dependencies]
-mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk", branch = "main" }
+mpc-sample-sdk = "0.7"
 ```
+
+Use a Git dependency only when you need an unreleased change from the SDK
+repository.
 
 A mod builds as a `cdylib`:
 
