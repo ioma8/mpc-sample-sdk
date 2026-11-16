@@ -13,7 +13,7 @@ use crate::image;
 
 /// `[page + 0x178]` is the Sample page's binding.
 const PAGE_BINDING: usize = 0x178;
-/// `[binding + 0x60]` is the state the instrument lives in.
+/// `[binding + 0x60]` is the state the app's Extract handler reads.
 const BINDING_STATE: usize = 0x60;
 /// `[state + 0x22e8]` is the layer list.
 pub(crate) const STATE_LAYERS_OFFSET: usize = 0x22e8;
@@ -195,7 +195,10 @@ mod tests {
         let regions = vec![
             (screen, pointer(firmware::SAMPLE_PAGE_VTABLE.offset)),
             (screen + super::PAGE_BINDING, pointer(binding)),
-            (binding + super::BINDING_STATE, pointer(state)),
+            // Extract reads this pointer at +0x60. A plausible but unrelated
+            // pointer at +0x68 must not be followed.
+            (binding + 0x60, pointer(state)),
+            (binding + 0x68, pointer(0x0052_0001)),
             (state + super::STATE_LAYERS_OFFSET, pointer(layers)),
             (layers + super::LAYERS_SAMPLE_OFFSET, pointer(sample)),
             (sample + SAMPLE_METADATA_OFFSET, pointer(metadata)),

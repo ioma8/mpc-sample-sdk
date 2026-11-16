@@ -62,9 +62,12 @@ a complete write. In-flight callbacks retain their own audio reference.
   holds a sample or is empty. The SDK patches and restores the native command’s
   destination around execute.
 
-When `destination` is set, no free pad is required. For `run` on an empty page, provide a populated source sample for the Extract
-range; `Source::Generated` instead supplies a temporary native seed. The source is only used to drive the command, not to shape the
-generated audio.
+The stock handler needs at least one free pad to construct its native command,
+even when `destination` is explicit. An occupied destination can be overwritten
+when another pad is free; a full program returns `ExtractError::NoFreePad`.
+For `run` on an empty page, provide a populated source sample for the Extract
+range; `Source::Generated` instead supplies a temporary native seed. The source
+is only used to drive the command, not to shape the generated audio.
 
 ## Generated audio without a source sample
 

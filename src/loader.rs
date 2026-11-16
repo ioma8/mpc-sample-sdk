@@ -148,11 +148,11 @@ pub unsafe fn install(module: &'static mut dyn Mod) -> Result<(), InstallError> 
     let Some(firmware) = Firmware::find() else {
         return Err(InstallError::NotFound);
     };
-    // SAFETY: verified image, loader runs once before application threads.
-    unsafe { image::set_base(firmware.base()) };
     if !firmware_ok(firmware.base()) {
         return Err(InstallError::WrongFirmware);
     }
+    // SAFETY: the image has passed the firmware fingerprint check.
+    unsafe { image::set_base(firmware.base()) };
 
     // Keep the ALSA taps linked; they are resolved by name by the app.
     crate::audio::keep_exports();

@@ -87,6 +87,8 @@ pub enum ExtractError {
     Invalid,
     /// The page has no program or the state is stale.
     NoProgram,
+    /// The native Extract handler needs at least one free pad to create a command.
+    NoFreePad,
     /// The app did not assign a pad, or its writer did not consume the buffer.
     NotApplied,
     /// The temporary source was used but its original layer could not be restored.
@@ -98,6 +100,7 @@ impl core::fmt::Display for ExtractError {
         match self {
             Self::Invalid => f.write_str("invalid extract range"),
             Self::NoProgram => f.write_str("no program on this page"),
+            Self::NoFreePad => f.write_str("no free pad for the native Extract command"),
             Self::NotApplied => f.write_str("the app did not assign a pad"),
             Self::RestoreFailed => f.write_str("the original sample layer could not be restored"),
         }
@@ -110,7 +113,6 @@ impl std::error::Error for ExtractError {}
 #[derive(Clone, Debug, Default)]
 struct Arm {
     buffer: Option<Arc<[f32]>>,
-    source_frames: usize,
     channels: u32,
     start: u32,
     end: u32,
@@ -321,7 +323,11 @@ unsafe fn run_command(
     // Arm one operation-scoped plan.  Re-arming replaces the slot atomically, so
     // a stale plan cannot leak into this command.
     let arm_id = if let Some(audio) = &arm.buffer {
-        writer::arm_owned(Arc::clone(audio), arm.source_frames, arm.channels as usize)
+        writer::arm_owned(
+            Arc::clone(audio),
+            (arm.end - arm.start) as usize,
+            arm.channels as usize,
+        )
     } else {
         writer::clear();
         None
@@ -471,20 +477,19 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     let Some(program) = super::descent::State::at(request.state).program() else {
         return Err(ExtractError::NoProgram);
     };
+    // The stock handler calls its free-pad finder before constructing Extract,
+    // even when the SDK will redirect the command to an explicit destination.
     // SAFETY: the request contract supplies the live program.
-    let before = unsafe { pads::free_count(program) };
-    if before < 0 {
-        return Err(ExtractError::NoProgram);
-    }
+    let first_free = unsafe { pads::first_free_pad(program) }.ok_or(ExtractError::NoFreePad)?;
+    let surface = crate::platform::control::surface();
     let before_target = request
         .destination
-        .and_then(|pad| pads::sample_for_pad(program, pad));
+        .and_then(|pad| pads::sample_for_pad(surface, pad));
     // SAFETY: native string construction follows run's firmware/thread contract.
     let name = unsafe { name_object(request.name) };
     let operation = Arc::new(Operation {
         arm: Arm {
             buffer: request.buffer.map(Arc::from),
-            source_frames: request.source_frames as usize,
             channels: request.channels,
             start: request.start,
             end: request.end,
@@ -513,9 +518,12 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
         wait_for_completion(&operation);
     }
     let assigned = match request.destination {
-        Some(pad) => pads::sample_for_pad(program, pad) != before_target,
-        // SAFETY: the caller still holds the live program on the UI thread.
-        None => (unsafe { pads::free_count(program) }) != before,
+        Some(pad) => pads::sample_for_pad(surface, pad) != before_target,
+        // SAFETY: only a request without a destination needs the live program.
+        None => {
+            // SAFETY: the caller still holds the live program on the UI thread.
+            (unsafe { pads::first_free_pad(program) }) != Some(first_free)
+        }
     };
     let finished = operation.finished.load(Ordering::Acquire);
     // A constructed command that is still running retains its audio and blocks
@@ -526,7 +534,7 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     let wrote = operation.wrote.load(Ordering::Acquire);
     if assigned && wrote && finished {
         Ok(Extracted {
-            pad: request.destination.unwrap_or(before),
+            pad: request.destination.unwrap_or(first_free),
         })
     } else {
         Err(ExtractError::NotApplied)
@@ -591,6 +599,15 @@ unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
         .is_some_and(|operation| !operation.finished.load(Ordering::Acquire))
     {
         return Err(ExtractError::NotApplied);
+    }
+    let Some(program) = super::descent::State::at(request.state).program() else {
+        return Err(ExtractError::NoProgram);
+    };
+    // Check before borrowing a seed, since the native handler requires a free
+    // pad even when the final destination is explicit.
+    // SAFETY: the caller guarantees the live program on its UI thread.
+    if unsafe { pads::first_free_pad(program) }.is_none() {
+        return Err(ExtractError::NoFreePad);
     }
     // SAFETY: the caller supplies the live page and exclusive UI access.
     let (state, frames) =

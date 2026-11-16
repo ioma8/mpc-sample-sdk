@@ -104,3 +104,5 @@ native command): it can drop or coalesce the repaint, and a job whose completion
 is only consumed on the paint hook then waits forever. While a job is pending,
 return its component from the pump function on every tick instead of only when a
 flag is set, so a dropped frame is retried 60 ms later.
+
+`show_toast` stores the message only. Repaint from a UI callback with a known live component to show it, and repaint again after expiry to clear it. The last painted pointer does not establish component lifetime; `repaint_painted` is unsafe and requires that guarantee. Do not pass `painted` to the repaint pump unless its lifetime is independently guaranteed.

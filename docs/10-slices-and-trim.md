@@ -62,6 +62,25 @@ if unsafe { slice::set_manual(screen) } {
 
 Check the current mode with `slice::chop_kind(screen)`; `-1` means no binding.
 
+## Preserve slices around an operation
+
+`slice::Snapshot::read(sample)` captures every start and end, including custom
+ends and an allocated empty list. Restore it after a failed operation:
+
+```rust
+let Some(previous) = slice::Snapshot::read(selected.sample()) else {
+    return;
+};
+// SAFETY: the selected sample is still live and exclusively accessed here.
+if !unsafe { previous.restore(selected.sample(), selected.frames()) } {
+    mpc_sample_sdk::platform::status::set_status("Could not restore slices");
+}
+```
+
+`slice::set_kind(screen, kind)` restores the native chop mode returned by
+`slice::chop_kind(screen)`. Both slice restoration and mode changes require a
+live Sample page and exclusive access on its UI thread.
+
 ## AutoTrim: find the audible edges
 
 ```rust

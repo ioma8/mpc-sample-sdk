@@ -56,6 +56,73 @@ pub fn slice_count(sample: usize) -> Option<Slices> {
     })
 }
 
+/// An exact snapshot of a sample's slice ranges, including custom ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot(Vec<(u32, u32)>);
+
+impl Snapshot {
+    /// Read every range, including an allocated empty slice list.
+    #[must_use]
+    pub fn read(sample: usize) -> Option<Self> {
+        let slices = slice_count(sample)?;
+        let mut ranges = Vec::new();
+        for index in 0..usize::try_from(slices.count).ok()? {
+            let slice = image::read_pointer(slices.begin.checked_add(index * 8)?)?;
+            ranges.push((
+                image::read_u32(slice.checked_add(SLICE_START)?)?,
+                image::read_u32(slice.checked_add(SLICE_END)?)?,
+            ));
+        }
+        Some(Self(ranges))
+    }
+
+    /// Restore the original ranges and verify them exactly.
+    ///
+    /// # Safety
+    /// The sample must be live and exclusively accessible on its owning UI thread.
+    #[must_use]
+    pub unsafe fn restore(&self, sample: usize, frames: u32) -> bool {
+        let Some(slices) = slice_count(sample) else {
+            return false;
+        };
+        // SAFETY: the caller owns the live sample; native calls own allocation.
+        unsafe {
+            image::void_of_pointer(image::base() + SLICE_RESET, slices.continuation);
+            for (index, &(start, _)) in self.0.iter().enumerate() {
+                if usize::try_from(image::insert_slice(
+                    image::base() + SLICE_INSERT,
+                    slices.continuation,
+                    start,
+                    1,
+                    frames,
+                ))
+                .ok()
+                    != Some(index)
+                {
+                    return false;
+                }
+            }
+            let Some(restored) = slice_count(sample) else {
+                return false;
+            };
+            if usize::try_from(restored.count).ok() != Some(self.0.len()) {
+                return false;
+            }
+            // Insert reconciles adjacent ends. Restore custom ends only after
+            // all insertions, when no borrowed native slice reference survives.
+            for (index, &(_, end)) in self.0.iter().enumerate() {
+                let Some(slice) = image::read_pointer(restored.begin + index * 8) else {
+                    return false;
+                };
+                if !image::write(slice + SLICE_END, &end.to_le_bytes()) {
+                    return false;
+                }
+            }
+        }
+        Self::read(sample).is_some_and(|snapshot| snapshot.0 == self.0)
+    }
+}
+
 /// Whether the app's slices start and end exactly where the requested
 /// boundaries say, with the last one running to the end of the sample.
 #[must_use]
@@ -190,6 +257,16 @@ const BINDING_FALLBACK: usize = 0x80;
 /// `screen` must be a live Sample page on its owning UI thread.
 #[must_use]
 pub unsafe fn set_manual(screen: usize) -> bool {
+    // SAFETY: forwarded caller contract.
+    unsafe { set_kind(screen, 0) }
+}
+
+/// Restore a previously read native chop kind.
+///
+/// # Safety
+/// The screen must be live on its owning UI thread; `kind` must be a native value.
+#[must_use]
+pub unsafe fn set_kind(screen: usize, kind: i32) -> bool {
     let Some(binding) = screen
         .checked_add(SCREEN_BINDING)
         .and_then(image::read_pointer)
@@ -221,7 +298,7 @@ pub unsafe fn set_manual(screen: usize) -> bool {
         if manager == 0 || invoke == 0 {
             return false;
         }
-        let mut manual: i32 = 0;
+        let mut mode = kind;
         // SAFETY: the caller guarantees the live page; the binding's invoke slot
         // is the app's model callback.
         unsafe {
@@ -229,7 +306,7 @@ pub unsafe fn set_manual(screen: usize) -> bool {
                 invoke,
                 binding + BINDING_CALL,
                 owner,
-                core::ptr::addr_of_mut!(manual) as usize,
+                core::ptr::addr_of_mut!(mode) as usize,
             );
         }
     } else {
@@ -239,7 +316,7 @@ pub unsafe fn set_manual(screen: usize) -> bool {
             image::void_of_pointer_value(
                 image::base() + SET_CHOP_MODE,
                 binding + BINDING_FALLBACK,
-                0,
+                kind.cast_unsigned(),
             );
         }
     }
@@ -260,6 +337,39 @@ pub fn chop_kind(screen: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{MAX_SLICES, SLICE_BYTES, SLICE_END, SLICE_START, valid_positions};
+
+    #[test]
+    fn snapshots_preserve_empty_lists_and_custom_ends() {
+        use crate::image::test_memory;
+
+        for ranges in [vec![], vec![(10_u32, 23_u32), (40, 71)]] {
+            let sample = 0x0060_0000_usize;
+            let metadata = 0x0061_0000_usize;
+            let begin = 0x0062_0000_usize;
+            let pointer = |value: usize| value.to_le_bytes().to_vec();
+            let mut regions = vec![
+                (
+                    sample + crate::platform::descent::SAMPLE_METADATA_OFFSET,
+                    pointer(metadata),
+                ),
+                (metadata + super::SLICES_BEGIN, pointer(begin)),
+                (
+                    metadata + super::SLICES_END,
+                    pointer(begin + ranges.len() * 8),
+                ),
+                (metadata + super::SLICES_CAPACITY, pointer(begin + 128)),
+            ];
+            for (index, &(start, end)) in ranges.iter().enumerate() {
+                let slice = 0x0063_0000 + index * 0x200;
+                regions.push((begin + index * 8, pointer(slice)));
+                regions.push((slice + SLICE_START, start.to_le_bytes().to_vec()));
+                regions.push((slice + SLICE_END, end.to_le_bytes().to_vec()));
+            }
+            test_memory::with(regions, || {
+                assert_eq!(super::Snapshot::read(sample).unwrap().0, ranges);
+            });
+        }
+    }
 
     #[test]
     fn the_object_layout_matches_the_reverse_engineering() {

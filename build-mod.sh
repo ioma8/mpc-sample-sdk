@@ -24,7 +24,7 @@ options:
   --env KEY=VALUE           extra Environment= line in the autorun (repeatable)
   -h, --help                this help
 
-The build uses cargo, nm, llvm-objcopy, llvm-objdump, python3, zip and a
+The build uses cargo, llvm-nm (or nm), llvm-objcopy, llvm-objdump, python3, zip and a
 `zig cc` aarch64 linker.  The SDK checkout's scripts/zig-cc-aarch64-linux-gnu
 is used when no linker is already configured.
 EOF
@@ -141,11 +141,21 @@ lib_name=$(printf '%s\n' "$plan" | sed -n '2p')
 input="$target_dir/$target/release/lib$lib_name.so"
 [ -f "$input" ] || { echo "cargo did not produce $input" >&2; exit 1; }
 
+if [ -n "${LLVM_NM:-}" ]; then
+    nm_tool=$LLVM_NM
+elif command -v llvm-nm >/dev/null 2>&1; then
+    nm_tool=$(command -v llvm-nm)
+elif [ -x /opt/homebrew/opt/llvm/bin/llvm-nm ]; then
+    nm_tool=/opt/homebrew/opt/llvm/bin/llvm-nm
+else
+    nm_tool=nm
+fi
+
 elf="$output_dir/$name.elf"
 so="$output_dir/$name.so"
 cp "$input" "$elf"
 echo "== symbol map =="
-nm "$elf" | awk 'NF >= 3 { print $1 " " $3 }' > "$output_dir/$name.map"
+"$nm_tool" "$elf" | awk 'NF >= 3 { print $1 " " $3 }' > "$output_dir/$name.map"
 
 for symbol in $symbols; do
     grep -Fq " $symbol" "$output_dir/$name.map" || {
@@ -155,7 +165,7 @@ for symbol in $symbols; do
 done
 
 echo "== unresolved imports =="
-unresolved=$(nm -D "$elf" | grep ' U ' | grep -v '@' || true)
+unresolved=$("$nm_tool" -D "$elf" | grep ' U ' | grep -v '@' || true)
 if [ -n "$unresolved" ]; then
     echo "unresolved symbols in the build:" >&2
     printf '%s\n' "$unresolved" >&2

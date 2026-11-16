@@ -122,21 +122,34 @@ fn flush_pending() {
     {
         return;
     }
-    let pending = PENDING.swap(0, Ordering::AcqRel);
-    for (pad, native) in NATIVE.iter().enumerate() {
-        let bit = 1_u32 << pad;
-        if pending & bit == 0 {
-            continue;
+    loop {
+        let pending = PENDING.swap(0, Ordering::AcqRel);
+        let mut failed = 0;
+        for (pad, native) in NATIVE.iter().enumerate() {
+            let bit = 1_u32 << pad;
+            if pending & bit == 0 {
+                continue;
+            }
+            let Ok(pad_byte) = u8::try_from(pad) else {
+                continue;
+            };
+            let light = override_light(pad_byte).unwrap_or_else(|| native.load(Ordering::Acquire));
+            if !send(pad_byte, light) {
+                failed |= bit;
+            }
         }
-        let Ok(pad_byte) = u8::try_from(pad) else {
-            continue;
-        };
-        let light = override_light(pad_byte).unwrap_or_else(|| native.load(Ordering::Acquire));
-        if !send(pad_byte, light) {
-            PENDING.fetch_or(bit, Ordering::Release);
+        if failed != 0 {
+            PENDING.fetch_or(failed, Ordering::Release);
+        }
+        FLUSHING.store(false, Ordering::Release);
+        if PENDING.load(Ordering::Acquire) & !failed == 0
+            || FLUSHING
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
         }
     }
-    FLUSHING.store(false, Ordering::Release);
 }
 
 /// Call the original per-pad callback with one `PadLight`.

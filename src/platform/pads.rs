@@ -6,8 +6,7 @@
 
 use crate::image;
 
-/// The app's "count free pads" entry, as an offset into the program object's
-/// vtable call.
+/// The app's first-free-pad finder.
 const FREE_PAD: usize = crate::firmware::FREE_PAD.offset;
 /// The app's "is this pad state busy" entry.
 const PAD_BUSY: usize = crate::firmware::PAD_BUSY.offset;
@@ -21,16 +20,19 @@ const SURFACE_PADS_END: usize = 0x2810;
 /// `InstrumentLayer::active`, confirmed in the firmware's native serializer.
 const LAYER_ACTIVE: usize = 0xb18;
 
-/// The app's count of free pads.
+/// The app's first free pad, or `None` when all pads are busy.
 ///
 /// # Safety
 ///
 /// `program` must be the live program object on its owning UI thread.
 #[must_use]
-pub unsafe fn free_count(program: usize) -> i32 {
+pub unsafe fn first_free_pad(program: usize) -> Option<i32> {
     // SAFETY: `base + FREE_PAD` is the entry the app itself calls with its
     // program object, and the caller guarantees the object.
-    unsafe { image::int_of_pointer(image::base() + FREE_PAD, program) }
+    let pad = unsafe { image::int_of_pointer(image::base() + FREE_PAD, program) };
+    usize::try_from(pad)
+        .is_ok_and(|index| index < MAX_PADS)
+        .then_some(pad)
 }
 
 /// Whether a known program has at least `required` free pads.
@@ -46,19 +48,18 @@ pub unsafe fn has_room(program: Option<usize>, required: usize) -> bool {
     program
         .filter(|program| *program != 0)
         // SAFETY: the caller guarantees the live program object.
-        .is_some_and(|program| unsafe { free_estimate(program) } >= required)
+        .is_some_and(|program| unsafe { free_count(program) } >= required)
 }
 
-/// How many pads the app's pad states say are free.
+/// How many pads the app considers free.
 ///
-/// The same two checks the native finder uses: a null pad state, or a pad state
-/// the app reports as not busy.
+/// Uses the same busy predicate as the app's first-free-pad finder.
 ///
 /// # Safety
 ///
 /// `program` must be the live program object on its owning UI thread.
 #[must_use]
-pub unsafe fn free_estimate(program: usize) -> usize {
+pub unsafe fn free_count(program: usize) -> usize {
     let Some(first) = image::read_pointer(program + PAD_STATES) else {
         return 0;
     };
@@ -233,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn free_estimate_counts_the_empty_pad_slots_of_a_program() {
+    fn free_count_counts_the_empty_pad_slots_of_a_program() {
         use crate::image::test_memory;
         // A program whose pad table holds three empty slots.
         let program: usize = 0x0030_0000;
@@ -248,7 +249,7 @@ mod tests {
         ];
         // SAFETY: the fixture stands in for the program; no native call is made,
         // because every slot is empty.
-        let free = test_memory::with(regions, || unsafe { super::free_estimate(program) });
+        let free = test_memory::with(regions, || unsafe { super::free_count(program) });
         assert_eq!(free, 3);
     }
 

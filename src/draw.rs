@@ -176,7 +176,7 @@ static TOAST: std::sync::Mutex<Toast> = std::sync::Mutex::new(Toast {
     text: [0; 48],
 });
 
-/// Show a toast and keep the screen repainting until it expires.
+/// Store a toast and request an immediate repaint.
 ///
 /// # Safety
 ///
@@ -210,16 +210,6 @@ pub unsafe fn toast_line(line: *const u8, repaint: Option<Repaint>, component: u
     toast.until = now + 1000;
     drop(toast);
     redraw(repaint, component);
-    std::thread::spawn(move || {
-        std::thread::sleep(core::time::Duration::from_millis(1120));
-        // Re-read the component the SDK most recently saw painted rather than
-        // holding the one captured above: a later page may own the screen now.
-        let current = if painted() != 0 { painted() } else { screen() };
-        // SAFETY: the app's repaint is safe to call from this thread, which is
-        // what the glue's own expiry thread did; `current` is the component the
-        // paint hook last observed.
-        redraw(repaint, current);
-    });
 }
 
 /// Ask the app to repaint the screen.
@@ -232,19 +222,12 @@ fn redraw(repaint: Option<Repaint>, component: usize) {
     }
 }
 
-/// Show a toast for the standard one second, and repaint when it expires.
+/// Store a toast for one second. Repaint from a live UI callback to show or clear it.
 pub fn show_toast(text: &str) {
-    // The C entry point reads a NUL-terminated string, so hand it one.
     let mut line = text.as_bytes().to_vec();
     line.push(0);
-    // The paint hook may not run again after this call, so ask for the expiry
-    // repaint here; otherwise the toast pixels stay until the next user action.
-    let component = if painted() != 0 { painted() } else { screen() };
-    // SAFETY: the buffer is NUL-terminated and lives for the call; `repaint`
-    // is the app's own repaint and `component` is on the current page.
-    unsafe {
-        toast_line(line.as_ptr(), repaint_function(), component);
-    }
+    // SAFETY: the string is terminated; no native component is accessed.
+    unsafe { toast_line(line.as_ptr(), None, 0) };
 }
 
 /// The toast's text, or an empty string.
@@ -271,7 +254,10 @@ pub fn toast_visible(now: i64) -> bool {
 pub use crate::platform::page::{g_screen, screen};
 
 /// Repaint the component the page last painted, or the page itself.
-pub fn repaint_painted() {
+///
+/// # Safety
+/// The last painted component must still be live on its owning UI thread.
+pub unsafe fn repaint_painted() {
     let painted = painted();
     let component = if painted != 0 { painted } else { screen() };
     // SAFETY: the paint hook recorded this live component, and the page stays
@@ -287,7 +273,7 @@ pub fn repaint_painted() {
 /// # Safety
 ///
 /// `component` must return only components that are live at the moment of the
-/// call, or zero.  Prefer [`painted`], which the paint hook maintains.
+/// call, or zero. The last painted pointer alone does not prove liveness.
 pub unsafe fn start_repaint_pump(component: fn() -> usize) {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if STARTED.swap(true, Ordering::AcqRel) {

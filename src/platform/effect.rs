@@ -331,7 +331,7 @@ pub fn render(
     channels: usize,
     rate: u32,
 ) -> Result<Rendered, EffectError> {
-    let firmware = Firmware::find().ok_or(EffectError::FirmwareRefused)?;
+    let firmware = verified_firmware().ok_or(EffectError::FirmwareRefused)?;
     render_at(firmware, effect, input, channels, rate, &[])
 }
 
@@ -348,11 +348,21 @@ pub fn render_code(
     parameters: &[(usize, f32)],
 ) -> Option<Vec<f32>> {
     let effect = Effect::from_code(code)?;
-    let firmware = Firmware::find()?;
+    let firmware = verified_firmware()?;
     let channels = usize::try_from(channels).ok()?;
     render_at(firmware, effect, input, channels, rate, parameters)
         .ok()
         .map(|rendered| rendered.audio)
+}
+
+/// The loader records the base only after checking all firmware fingerprints.
+fn verified_firmware() -> Option<Firmware> {
+    let base = image::base();
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: the loader records only a verified, process-lived image.
+    Some(unsafe { Firmware::from_base(base) })
 }
 
 /// Render through a specific image handle.

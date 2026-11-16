@@ -263,6 +263,24 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_source_range_can_include_a_rendered_tail() {
+        unsafe extern "C" fn consume(_: usize, raw: usize) {
+            // SAFETY: the test passes a live descriptor and six samples.
+            let block = unsafe { &*(raw as *const Block) };
+            assert_eq!(block.frames, 6);
+            // SAFETY: the writer substituted the owned six-sample buffer.
+            let samples = unsafe { std::slice::from_raw_parts(block.pointer as *const f32, 6) };
+            assert_eq!(samples, &[1., 2., 3., 4., 5., 6.]);
+        }
+        let _serial = serial();
+        let id = arm_owned(std::sync::Arc::from([1., 2., 3., 4., 5., 6.]), 4, 1).unwrap();
+        let mut block = block(4, 123);
+        // SAFETY: the descriptor and synchronous writer satisfy the contract.
+        unsafe { write(7, std::ptr::from_mut(&mut block).cast(), Some(consume)) };
+        assert!(finish(id));
+    }
+
+    #[test]
     fn an_incomplete_synchronous_write_fails_without_waiting() {
         let _serial = serial();
         let id = arm_owned(std::sync::Arc::from([1.0_f32; 4]), 4, 1).expect("armed");

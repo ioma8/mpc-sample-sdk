@@ -1,4 +1,21 @@
-# Migrating to v0.2.0
+# API migration
+
+## v0.7.0
+
+This release includes API changes alongside the slice snapshot and restoration
+helpers. Update callers before changing their SDK pin:
+
+| API | Change | Replacement |
+| --- | --- | --- |
+| `pads::free_count` | now returns `usize` count | use `pads::first_free_pad` for the first free pad (`Option<i32>`) |
+| `pads::free_estimate` | removed | use `pads::free_count` |
+| `draw::repaint_painted` | now `unsafe` | call only while the last painted component is still live on its UI thread |
+| `ExtractError` | added `NoFreePad` variant | handle the full-program precondition in exhaustive matches |
+
+`slice::Snapshot` captures and restores exact slice ranges. `slice::set_kind`
+restores a native chop mode; `slice::set_manual` remains available.
+
+## v0.2.0
 
 v0.2.0 corrects firmware-boundary defects found in the post-release review. It
 is **API-breaking**: raw firmware operations now demand an explicit `safety`
@@ -17,7 +34,7 @@ no `unsafe`; only the firmware boundary does.
 | --- | --- | --- |
 | `image::write` | now `unsafe` | a kernel write does not establish Rust aliasing or object validity |
 | `Firmware::from_base` | removed from the public API | a number is not an authenticated firmware image; use `Firmware::find` |
-| `pads::free_count`, `pads::free_estimate`, `pads::has_room` | now `unsafe` | each calls the app's own predicate with a caller-supplied program |
+| `pads::first_free_pad`, `pads::free_count`, `pads::has_room` | now `unsafe` | each calls the app's own predicate with a caller-supplied program; `first_free_pad` returns `None` when the program is full |
 | `selection::current` | now `unsafe` | calls the page predicate with a caller-supplied screen |
 | `Selection` fields | private; use `screen()`, `state()`, `sample()`, `frames()`, `channels()`, `rate()` | only `selection::current` can construct a validated selection |
 | `Selection::from_parts` | removed | no SDK caller; a synth action that needs no sample uses `selection::page_state` |
