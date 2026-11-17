@@ -120,6 +120,8 @@ pub(crate) const SLICE_SET_END: Entry = call(0x295_0bb0, PACIASP);
 pub(crate) const SELECT_SLICE: Entry = call(0x166_80a0, PACIASP);
 pub(crate) const SET_CHOP_MODE: Entry = call(0x15d_2840, PACIASP);
 pub(crate) const SAMPLE_PAGE_VTABLE: Entry = data(0x6e2_12a0);
+/// Vtable of the native Save Project name screen.
+pub(crate) const PROJECT_SAVE_SCREEN_VTABLE: Entry = data(0x6e1_faa0);
 pub(crate) const CHOP_PREDICATE: Entry = call(0x112_fd50, PACIASP);
 pub(crate) const REVERB_FACTORY: Entry = call(0x03c4_45b0, PACIASP);
 pub(crate) const VINYL_FACTORY: Entry = call(0x03c4_3cf0, PACIASP);
@@ -134,7 +136,7 @@ pub(crate) const EXTRACT_HANDLER: Entry = call(0x0165_80d0, PACIASP);
 pub(crate) const APP_PROBE_OFFSET: usize = 0x00b5_5b00;
 
 /// Every function and data entry the modules use, in one list.
-pub(crate) const CALLS: [Entry; 22] = [
+pub(crate) const CALLS: [Entry; 23] = [
     SET_COLOUR,
     FILL_RECT,
     SET_FONT,
@@ -150,6 +152,7 @@ pub(crate) const CALLS: [Entry; 22] = [
     SELECT_SLICE,
     SET_CHOP_MODE,
     SAMPLE_PAGE_VTABLE,
+    PROJECT_SAVE_SCREEN_VTABLE,
     CHOP_PREDICATE,
     REVERB_FACTORY,
     VINYL_FACTORY,

@@ -47,3 +47,4 @@ pub use event::{
     PadEvent, PadResponse, PaintEvent, SurfaceEvent, erase, shift,
 };
 pub use loader::{InstallError, install};
+pub use sites::replace_native_text_editor;

@@ -11,6 +11,8 @@ pub mod button {
     pub const SHIFT: u32 = 0x31;
     /// ERASE.
     pub const ERASE: u32 = 0x09;
+    /// SAMPLE RECORD.
+    pub const SAMPLE_RECORD: u32 = 0x49;
     /// DATA encoder press.
     pub const DATA: u32 = 0x6f;
     /// B3.
@@ -213,7 +215,7 @@ pub enum Flow {
     Consume,
 }
 
-/// One paint of the Sample page.
+/// One paint of a supported native screen.
 #[derive(Clone, Copy, Debug)]
 pub struct PaintEvent {
     /// The component that was painted.
@@ -322,6 +324,17 @@ pub trait Mod: Send + 'static {
     fn on_label(&mut self, _label: &CStr) -> Option<&'static CStr> {
         None
     }
+
+    /// Observe or replace one native `juce::String` assignment.
+    ///
+    /// `dest` is the live native string object receiving `label`. Returning a
+    /// replacement uses the same lifetime contract as [`Self::on_label`].
+    fn on_text_assignment(&mut self, _dest: usize, label: &CStr) -> Option<&'static CStr> {
+        self.on_label(label)
+    }
+
+    /// Observe a component repaint on the app's UI thread.
+    fn on_repaint(&mut self, _component: usize) {}
 
     /// The 16 Levels renderer computed a pitch offset; return the one to apply.
     fn on_pitch(&mut self, applied: i32) -> i32 {

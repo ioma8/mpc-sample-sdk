@@ -183,6 +183,7 @@ pub(crate) unsafe fn install(base: usize) -> bool {
             && originals().lighting_delete.is_some(),
     );
     install_paint(base);
+    install_project_save_paint(base);
     committed
 }
 
@@ -685,6 +686,7 @@ unsafe extern "C" fn repaint(component: usize, a: u64, b: u64) {
             forward(component, a, b);
         }
     }
+    let _ = with_mod(|module| module.on_repaint(component));
 }
 
 /// A label assignment: let the mod rename it, then forward.
@@ -697,7 +699,9 @@ unsafe extern "C" fn str_assign(dest: usize, text: *const u8) {
     if !text.is_null() {
         // SAFETY: the caller promises a NUL-terminated string.
         let label = unsafe { core::ffi::CStr::from_ptr(text.cast()) };
-        if let Some(replacement) = with_mod(|module| module.on_label(label)).flatten() {
+        if let Some(replacement) =
+            with_mod(|module| module.on_text_assignment(dest, label)).flatten()
+        {
             chosen = replacement.as_ptr().cast();
         }
     }
@@ -707,6 +711,63 @@ unsafe extern "C" fn str_assign(dest: usize, text: *const u8) {
             forward(dest, chosen);
         }
     }
+}
+
+/// Replace text in a live MPC `ui::TextEditor` using its native key handler.
+///
+/// # Safety
+/// `editor` must be the supported firmware's live `ui::TextEditor` and this
+/// must run on the UI thread that owns it.
+pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) -> bool {
+    const TEXT_EDITOR_VTABLE: usize = 0x6e18e20;
+    const KEY_PRESSED_SLOT: usize = 28;
+
+    if !text.to_bytes().is_ascii()
+        || image::read_pointer(editor) != Some(image::base() + TEXT_EDITOR_VTABLE)
+    {
+        return false;
+    }
+    let Some(vtable) = image::read_pointer(editor) else {
+        return false;
+    };
+    let Some(address) = vtable
+        .checked_add(KEY_PRESSED_SLOT * size_of::<usize>())
+        .and_then(image::read_pointer)
+    else {
+        return false;
+    };
+    type KeyPressed = unsafe extern "C" fn(usize, *const NativeKeyPress) -> bool;
+    // SAFETY: this slot is `TextEditor::keyPressed(const KeyPress&)` in the
+    // supported firmware; the object vtable was checked above.
+    let key_pressed: KeyPressed = unsafe { core::mem::transmute(address) };
+    let select_all = NativeKeyPress {
+        key_code: i32::from(b'a'),
+        modifiers: 2, // JUCE ModifierKeys::ctrlModifier
+        text_character: 0,
+    };
+    // SAFETY: the caller guarantees a live UI-thread-owned editor.
+    if !unsafe { key_pressed(editor, &select_all) } {
+        return false;
+    }
+    for byte in text.to_bytes() {
+        let key = NativeKeyPress {
+            key_code: i32::from(*byte),
+            modifiers: 0,
+            text_character: u32::from(*byte),
+        };
+        // SAFETY: same live editor and UI thread; printable ASCII is valid.
+        if !unsafe { key_pressed(editor, &key) } {
+            return false;
+        }
+    }
+    true
+}
+
+#[repr(C)]
+struct NativeKeyPress {
+    key_code: i32,
+    modifiers: u32,
+    text_character: u32,
 }
 
 /// The app's writer: hand the block to the substitute.
@@ -789,6 +850,7 @@ unsafe extern "C" fn control_entry(
 
 /// The app's paint, displaced by the SDK.
 static mut ORIGINAL_PAINT: Option<unsafe extern "C" fn(usize, usize)> = None;
+static mut ORIGINAL_PROJECT_SAVE_PAINT: Option<unsafe extern "C" fn(usize, usize)> = None;
 
 /// The page's paint: let the app draw, then the mod.
 ///
@@ -853,6 +915,66 @@ fn install_paint(base: usize) -> bool {
     // SAFETY: the page is writable now.
     unsafe {
         *slot = page_paint as *const () as usize;
+        libc::mprotect(page as *mut libc::c_void, 0x1000, libc::PROT_READ);
+    }
+    true
+}
+
+/// The native Save Project screen's paint, displaced by the SDK.
+unsafe extern "C" fn project_save_paint(component: usize, graphics: usize) {
+    // SAFETY: the original is the app's own paint.
+    unsafe {
+        if let Some(original) = *core::ptr::addr_of!(ORIGINAL_PROJECT_SAVE_PAINT) {
+            original(component, graphics);
+        }
+    }
+    draw::set_painted(component);
+    let event = PaintEvent {
+        component,
+        graphics,
+        sample_page: false,
+        chop_mode: false,
+    };
+    let mut handle = Graphics::new(graphics);
+    with_mod(|module| module.on_paint(&mut handle, event));
+}
+
+/// Install a post-paint callback on the native Save Project name screen.
+fn install_project_save_paint(base: usize) -> bool {
+    let address = base + crate::firmware::PROJECT_SAVE_SCREEN_VTABLE.offset;
+    // SAFETY: only check that the firmware vtable address is mapped.
+    if unsafe { !image::mapped(address as *const u8) } {
+        return false;
+    }
+    // SAFETY: the address is the supported firmware's ProjectSaveScreen vtable.
+    let slot = unsafe { (address as *mut usize).add(27) };
+    // SAFETY: the vtable address is mapped and belongs to the app image.
+    let original = unsafe { *slot };
+    if original == 0 || original == project_save_paint as *const () as usize {
+        return false;
+    }
+    // SAFETY: ProjectSaveScreen::paint has the same ABI as page_paint.
+    unsafe {
+        ORIGINAL_PROJECT_SAVE_PAINT =
+            Some(core::mem::transmute::<usize, unsafe extern "C" fn(usize, usize)>(original));
+    }
+    let page = address & !0xfff;
+    // SAFETY: the vtable page is inside the app's image.
+    let unlocked = unsafe {
+        libc::mprotect(
+            page as *mut libc::c_void,
+            0x1000,
+            libc::PROT_READ | libc::PROT_WRITE,
+        )
+    } == 0;
+    if !unlocked {
+        // SAFETY: the hook is not installed.
+        unsafe { ORIGINAL_PROJECT_SAVE_PAINT = None };
+        return false;
+    }
+    // SAFETY: the page is writable and the displaced method is saved above.
+    unsafe {
+        *slot = project_save_paint as *const () as usize;
         libc::mprotect(page as *mut libc::c_void, 0x1000, libc::PROT_READ);
     }
     true
