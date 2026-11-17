@@ -45,6 +45,8 @@ It owns everything that is not a feature:
   the latency the device geometry implies.
 * **Drawing** — a `Graphics` handle over the app's own `setColour`/`fillRect`/
   `Font` calls, the toast, the installed page-paint slot and the repaint pump.
+* **Native browser** — virtual directories added to the firmware's POSIX
+  listing; entries resolve to original paths and create no file copies.
 * **Platform objects** — typed, bounds-checked access to the page, the selected
   sample, pads, slices, trim, WAV files, paths, the status line, the clock, the
   writer, the control surface, the effect renderer and the Extract command.
@@ -130,6 +132,7 @@ src/image.rs        the image, memory window and firmware call helpers
 src/audio.rs        the ALSA taps, OutputInfo, latency and S32 mixing
 src/draw.rs         Graphics, the toast, the screen and the repaint pump
 src/midi.rs         NoteEvent and replay
+src/browser.rs      virtual native-browser directories and file-open observer
 src/task.rs         the generic one-shot worker
 src/render.rs       RenderJob, RenderOutput and source metadata
 src/platform/       page, descent (the Sample page's object graph), selection,

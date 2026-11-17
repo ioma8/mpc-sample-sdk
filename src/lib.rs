@@ -28,6 +28,7 @@
 //! menu.  Those live in the mod crate and only use the API here.
 
 pub mod audio;
+pub mod browser;
 pub mod draw;
 pub mod event;
 mod firmware;
