@@ -4,7 +4,7 @@
 //! forwards the app's own displaced function or swallows the event.  The
 //! originals are stored here and never leave this module.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::draw::{self, Graphics, Repaint};
 use crate::event::{
@@ -26,6 +26,9 @@ struct Site {
 static NOTE_ON_OK: AtomicBool = AtomicBool::new(false);
 /// Held by `note_off`.
 static NOTE_OFF_OK: AtomicBool = AtomicBool::new(false);
+/// The recipient of each physical button's press. Keep this outside the mod
+/// mutex so a busy/reentrant callback cannot route the matching release alone.
+static BUTTON_OWNERS: [AtomicU8; 256] = [const { AtomicU8::new(0) }; 256];
 
 /// Whether both note hooks are installed.
 #[must_use]
@@ -406,6 +409,27 @@ fn decide(call: impl FnOnce(&mut dyn event::Mod) -> Flow) -> Flow {
     with_mod(call).unwrap_or(Flow::Forward)
 }
 
+/// Keep a button's release with the recipient of its press, even when the mod
+/// callback is unavailable for one edge.
+fn button_flow(code: u32, pressed: bool, flow: Flow) -> Flow {
+    let Some(owner) = usize::try_from(code)
+        .ok()
+        .and_then(|code| BUTTON_OWNERS.get(code))
+    else {
+        return flow;
+    };
+    if pressed {
+        owner.store(if flow == Flow::Forward { 1 } else { 2 }, Ordering::Release);
+        flow
+    } else {
+        match owner.swap(0, Ordering::AcqRel) {
+            1 => Flow::Forward,
+            2 => Flow::Consume,
+            _ => flow,
+        }
+    }
+}
+
 /// The encoder: let the mod decide, then forward.
 ///
 /// # Safety
@@ -506,7 +530,7 @@ unsafe extern "C" fn surface(surface: usize, code: i32, payload: usize) {
         // SAFETY: the original is the app's own handler.
         unsafe {
             if let Some(forward) = originals().surface {
-                forward(surface, code, payload);
+                event::with_surface_event(event, || forward(surface, code, payload));
             }
         }
     }
@@ -629,7 +653,7 @@ unsafe extern "C" fn buttons(event: usize) -> i32 {
         erase: event::erase(),
         surface,
     };
-    let flow = decide(|module| module.on_button(message));
+    let flow = button_flow(code, pressed, decide(|module| module.on_button(message)));
     // Track the hold state after the mod has seen the event, so it sees the
     // state that was in effect when the key was pressed.
     if code == event::button::SHIFT {
@@ -836,7 +860,21 @@ fn install_paint(base: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{notes_ready, table};
+    use super::{button_flow, notes_ready, table};
+
+    #[test]
+    fn button_release_keeps_the_press_recipient_when_callback_availability_changes() {
+        use crate::Flow;
+
+        assert_eq!(button_flow(240, true, Flow::Consume), Flow::Consume);
+        assert_eq!(button_flow(240, false, Flow::Forward), Flow::Consume);
+
+        assert_eq!(button_flow(241, true, Flow::Forward), Flow::Forward);
+        assert_eq!(button_flow(241, false, Flow::Consume), Flow::Forward);
+
+        // An unmatched release keeps the callback's decision.
+        assert_eq!(button_flow(242, false, Flow::Consume), Flow::Consume);
+    }
 
     #[test]
     fn independent_pad_hook_completes_after_native_forwarding() {

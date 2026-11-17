@@ -102,6 +102,59 @@ impl SurfaceEvent {
     }
 }
 
+thread_local! {
+    static CURRENT_SURFACE: core::cell::Cell<Option<SurfaceEvent>> = const { core::cell::Cell::new(None) };
+}
+
+/// The surface event currently being forwarded on this thread, if any.
+///
+/// The firmware may call a pad hook synchronously while handling a surface
+/// event. This identifies the physical pad even when the pad hook's own index
+/// refers to a different object, as with Chop releases.
+#[must_use]
+pub fn current_surface_event() -> Option<SurfaceEvent> {
+    CURRENT_SURFACE.with(core::cell::Cell::get)
+}
+
+pub(crate) fn with_surface_event<T>(event: SurfaceEvent, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<SurfaceEvent>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CURRENT_SURFACE.with(|current| current.set(self.0));
+        }
+    }
+    let previous = CURRENT_SURFACE.with(|current| current.replace(Some(event)));
+    let _restore = Restore(previous);
+    f()
+}
+
+#[cfg(test)]
+mod surface_context_tests {
+    use super::{SurfaceEvent, current_surface_event, with_surface_event};
+
+    #[test]
+    fn surface_context_is_scoped_and_nested() {
+        let mut event = SurfaceEvent {
+            surface: 1,
+            code: 2,
+            payload: 0,
+            kind: 0x80,
+            note: 42,
+            velocity: 0,
+        };
+        assert!(current_surface_event().is_none());
+        with_surface_event(event, || {
+            assert_eq!(current_surface_event().unwrap().code, 2);
+            event.code = 3;
+            with_surface_event(event, || {
+                assert_eq!(current_surface_event().unwrap().code, 3);
+            });
+            assert_eq!(current_surface_event().unwrap().code, 2);
+        });
+        assert!(current_surface_event().is_none());
+    }
+}
+
 /// A turn of the DATA encoder.
 #[derive(Clone, Copy, Debug)]
 pub struct EncoderEvent {
