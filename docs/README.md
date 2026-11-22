@@ -44,7 +44,7 @@ crate from [crates.io](https://crates.io/crates/mpc-sample-sdk):
 crate-type = ["cdylib"]
 
 [dependencies]
-mpc-sample-sdk = "0.7"
+mpc-sample-sdk = "0.8"
 ```
 
 For an unreleased SDK change, use a Git dependency pinned to a reviewed commit

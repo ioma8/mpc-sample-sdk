@@ -261,8 +261,18 @@ mod tests {
 
     #[test]
     fn the_fingerprint_set_covers_every_word_the_tested_image_has() {
+        // The vtables are data: they have no instruction word to verify, and
+        // they are the only entries that may lack one.  A new one is a decision
+        // about what `firmware_ok` checks, so it has to be reviewed here.
+        let data = HOOKS
+            .iter()
+            .chain(GUARDS.iter())
+            .chain(CALLS.iter())
+            .filter(|entry| entry.word.is_none())
+            .count();
+        assert_eq!(data, 2, "only the two vtables are data entries");
         // Every hook, guard and call with code, checked by `firmware_ok`.
-        let code_entries = HOOKS.len() + GUARDS.len() + CALLS.len() - 1;
+        let code_entries = HOOKS.len() + GUARDS.len() + CALLS.len() - data;
         assert_eq!(fingerprints().count(), code_entries);
         assert!(fingerprints().any(|(offset, word)| offset == CC.offset && word == 0x3940_2003));
     }

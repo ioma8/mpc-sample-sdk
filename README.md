@@ -64,7 +64,7 @@ Install the published crate from [crates.io](https://crates.io/crates/mpc-sample
 
 ```toml
 [dependencies]
-mpc-sample-sdk = "0.7"
+mpc-sample-sdk = "0.8"
 ```
 
 Use a Git dependency only when you need an unreleased change from the SDK

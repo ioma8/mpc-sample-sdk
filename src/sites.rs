@@ -597,17 +597,30 @@ unsafe extern "C" fn cc(event: usize, raw: u32, low: f32, range: f32) {
     }
 }
 
+/// The property slot that carries the pitch's fine tune.  Slot 0, which the
+/// app's own 16 Levels writer uses, is the semitones; one step of this slot is
+/// a tenth of a semitone.
+const FINE_TUNE_SLOT: u64 = 1;
+
 /// The 16 Levels pitch setter: let the mod shift the applied offset.
 ///
 /// # Safety
 ///
 /// The app calls this with its own arguments.
 unsafe extern "C" fn pitch(app: usize, a: u64, b: u64, applied: i32) {
-    let offset = with_mod(|module| module.on_pitch(applied)).unwrap_or(applied);
+    let (offset, cents) =
+        with_mod(|module| (module.on_pitch(applied), module.on_pitch_fine(applied)))
+            .unwrap_or((applied, 0));
     // SAFETY: the original is the app's own setter.
     unsafe {
         if let Some(forward) = originals().pitch {
             forward(app, a, b, offset);
+            if cents != 0 {
+                // The setter writes exactly one property slot per call, so the
+                // cents need their own call: same event block, base 0, the slot
+                // after the semitones.
+                forward(app, FINE_TUNE_SLOT, 0, cents);
+            }
         }
     }
 }
@@ -719,8 +732,9 @@ unsafe extern "C" fn str_assign(dest: usize, text: *const u8) {
 /// `editor` must be the supported firmware's live `ui::TextEditor` and this
 /// must run on the UI thread that owns it.
 pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) -> bool {
-    const TEXT_EDITOR_VTABLE: usize = 0x6e18e20;
+    const TEXT_EDITOR_VTABLE: usize = 0x06e1_8e20;
     const KEY_PRESSED_SLOT: usize = 28;
+    type KeyPressed = unsafe extern "C" fn(usize, *const NativeKeyPress) -> bool;
 
     if !text.to_bytes().is_ascii()
         || image::read_pointer(editor) != Some(image::base() + TEXT_EDITOR_VTABLE)
@@ -736,7 +750,6 @@ pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) 
     else {
         return false;
     };
-    type KeyPressed = unsafe extern "C" fn(usize, *const NativeKeyPress) -> bool;
     // SAFETY: this slot is `TextEditor::keyPressed(const KeyPress&)` in the
     // supported firmware; the object vtable was checked above.
     let key_pressed: KeyPressed = unsafe { core::mem::transmute(address) };
@@ -746,7 +759,7 @@ pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) 
         text_character: 0,
     };
     // SAFETY: the caller guarantees a live UI-thread-owned editor.
-    if !unsafe { key_pressed(editor, &select_all) } {
+    if !unsafe { key_pressed(editor, &raw const select_all) } {
         return false;
     }
     for byte in text.to_bytes() {
@@ -756,7 +769,7 @@ pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) 
             text_character: u32::from(*byte),
         };
         // SAFETY: same live editor and UI thread; printable ASCII is valid.
-        if !unsafe { key_pressed(editor, &key) } {
+        if !unsafe { key_pressed(editor, &raw const key) } {
             return false;
         }
     }
@@ -955,8 +968,10 @@ fn install_project_save_paint(base: usize) -> bool {
     }
     // SAFETY: ProjectSaveScreen::paint has the same ABI as page_paint.
     unsafe {
-        ORIGINAL_PROJECT_SAVE_PAINT =
-            Some(core::mem::transmute::<usize, unsafe extern "C" fn(usize, usize)>(original));
+        ORIGINAL_PROJECT_SAVE_PAINT = Some(core::mem::transmute::<
+            usize,
+            unsafe extern "C" fn(usize, usize),
+        >(original));
     }
     let page = address & !0xfff;
     // SAFETY: the vtable page is inside the app's image.

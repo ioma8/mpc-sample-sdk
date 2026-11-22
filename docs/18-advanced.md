@@ -52,11 +52,22 @@ impl Mod for Labels {
         // Add an octave to the 16 Levels pitch offset.
         applied + 12
     }
+
+    fn on_pitch_fine(&mut self, _applied: i32) -> i32 {
+        // A quarter tone on top: the app has a cents slot next to the semitones.
+        50
+    }
 }
 ```
 
 `on_label` returns a replacement or `None`; `on_pitch` returns the offset the app
-should apply.
+should apply, and `on_pitch_fine` adds cents to it.  The app's pitch parameter is
+`Octave`/`Semitones`/`Cents` and its setter writes one property slot per call —
+slot 0 the semitones, slot 1 the cents — so the SDK makes a second call only
+when `on_pitch_fine` returns a non-zero value.  That is how a mod reaches
+sub-semitone pitch: whole semitones alone are the finest the semitone slot can
+express.  Cents land on the pad's own note, so `on_pitch_fine` is the place for
+any tuning that is not a whole semitone.
 
 ## Low-level sites
 

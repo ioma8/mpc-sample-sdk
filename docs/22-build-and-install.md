@@ -15,7 +15,7 @@ Add the released SDK to the mod's `Cargo.toml` from crates.io:
 
 ```toml
 [dependencies]
-mpc-sample-sdk = "0.7"
+mpc-sample-sdk = "0.8"
 ```
 
 Use a Git dependency only when building against an unreleased SDK change.

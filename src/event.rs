@@ -341,6 +341,21 @@ pub trait Mod: Send + 'static {
         applied
     }
 
+    /// The fine tune to add to the offset [`Self::on_pitch`] returned, in steps
+    /// of a tenth of a semitone.
+    ///
+    /// The app's pitch parameter carries a fine tune next to the semitones
+    /// (its Tune page's K2), and the setter writes one property slot per call:
+    /// slot 0 is the semitones, slot 1 the fine tune.  Measured on firmware
+    /// 1.3.0.12, one step of that slot is a tenth of a semitone, and the slot
+    /// spans ±12 semitones — so half a semitone is `5`, not `50`.  The SDK
+    /// writes the slot only when this is non-zero, so a mod that tunes in whole
+    /// semitones never touches it.  `applied` is the offset the renderer
+    /// computed, the same value `on_pitch` received.
+    fn on_pitch_fine(&mut self, _applied: i32) -> i32 {
+        0
+    }
+
     /// A screen painted.  The app has already drawn; `event.sample_page` says
     /// whether it was the Sample page.
     fn on_paint(&mut self, _graphics: &mut Graphics, _event: PaintEvent) {}
