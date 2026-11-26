@@ -308,6 +308,27 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
     let Some(layer) = layer_for_pad(surface, pad) else {
         return false;
     };
+    // SAFETY: forwarded from the caller.
+    unsafe { set_active_layer(layer, active) }
+}
+
+/// Enable or disable a pad through its live program's pad table.
+///
+/// # Safety
+/// The program and its pad must be live and exclusively accessible on the UI thread.
+#[must_use]
+pub unsafe fn set_program_layer_active(program: usize, pad: i32, active: bool) -> bool {
+    let Some(layer) = pad_slot(program, pad)
+        .and_then(|state| super::descent::State::at(state).layers())
+        .map(super::descent::Layers::address)
+    else {
+        return false;
+    };
+    // SAFETY: forwarded from the caller.
+    unsafe { set_active_layer(layer, active) }
+}
+
+unsafe fn set_active_layer(layer: usize, active: bool) -> bool {
     let Some(sample_address) = super::descent::Layers::at(layer).sample_slot() else {
         return false;
     };
