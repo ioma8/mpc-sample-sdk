@@ -103,7 +103,9 @@ pub(crate) const LIGHTING_DELETE: Entry = hook(0x0143_9fd0, PACIASP);
 /// Vtable of the sender whose destructor hooks are installed above.
 pub(crate) const LIGHTING_SENDER_VTABLE: Entry = data(0x06d8_fa60);
 
-// --- Calls: functions and data the SDK uses, recorded but not yet fingerprinted. ---
+// --- Calls: functions and data the SDK uses. Code entries are fingerprinted by
+// `firmware_ok`; data entries are identified at run time by comparing a live
+// object's vptr, not by an instruction word. ---
 
 pub(crate) const SET_COLOUR: Entry = call(0x102_d5e0, PACIASP);
 pub(crate) const FILL_RECT: Entry = call(0x102_e000, PACIASP);
@@ -122,6 +124,8 @@ pub(crate) const SET_CHOP_MODE: Entry = call(0x15d_2840, PACIASP);
 pub(crate) const SAMPLE_PAGE_VTABLE: Entry = data(0x6e2_12a0);
 /// Vtable of the native Save Project name screen.
 pub(crate) const PROJECT_SAVE_SCREEN_VTABLE: Entry = data(0x6e1_faa0);
+/// Vtable of the native multi-line text editor.
+pub(crate) const TEXT_EDITOR_VTABLE: Entry = data(0x6e1_8e20);
 pub(crate) const CHOP_PREDICATE: Entry = call(0x112_fd50, PACIASP);
 pub(crate) const REVERB_FACTORY: Entry = call(0x03c4_45b0, PACIASP);
 pub(crate) const VINYL_FACTORY: Entry = call(0x03c4_3cf0, PACIASP);
@@ -136,7 +140,7 @@ pub(crate) const EXTRACT_HANDLER: Entry = call(0x0165_80d0, PACIASP);
 pub(crate) const APP_PROBE_OFFSET: usize = 0x00b5_5b00;
 
 /// Every function and data entry the modules use, in one list.
-pub(crate) const CALLS: [Entry; 23] = [
+pub(crate) const CALLS: [Entry; 25] = [
     SET_COLOUR,
     FILL_RECT,
     SET_FONT,
@@ -153,6 +157,8 @@ pub(crate) const CALLS: [Entry; 23] = [
     SET_CHOP_MODE,
     SAMPLE_PAGE_VTABLE,
     PROJECT_SAVE_SCREEN_VTABLE,
+    TEXT_EDITOR_VTABLE,
+    LIGHTING_SENDER_VTABLE,
     CHOP_PREDICATE,
     REVERB_FACTORY,
     VINYL_FACTORY,
@@ -270,7 +276,7 @@ mod tests {
             .chain(CALLS.iter())
             .filter(|entry| entry.word.is_none())
             .count();
-        assert_eq!(data, 2, "only the two vtables are data entries");
+        assert_eq!(data, 4, "only the four vtables are data entries");
         // Every hook, guard and call with code, checked by `firmware_ok`.
         let code_entries = HOOKS.len() + GUARDS.len() + CALLS.len() - data;
         assert_eq!(fingerprints().count(), code_entries);

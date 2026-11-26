@@ -732,12 +732,12 @@ unsafe extern "C" fn str_assign(dest: usize, text: *const u8) {
 /// `editor` must be the supported firmware's live `ui::TextEditor` and this
 /// must run on the UI thread that owns it.
 pub unsafe fn replace_native_text_editor(editor: usize, text: &core::ffi::CStr) -> bool {
-    const TEXT_EDITOR_VTABLE: usize = 0x06e1_8e20;
     const KEY_PRESSED_SLOT: usize = 28;
     type KeyPressed = unsafe extern "C" fn(usize, *const NativeKeyPress) -> bool;
 
     if !text.to_bytes().is_ascii()
-        || image::read_pointer(editor) != Some(image::base() + TEXT_EDITOR_VTABLE)
+        || image::read_pointer(editor)
+            != Some(image::base() + crate::firmware::TEXT_EDITOR_VTABLE.offset)
     {
         return false;
     }
