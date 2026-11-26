@@ -31,7 +31,7 @@ See [the hands-on guide](docs/README.md) and the
 
 It owns everything that is not a feature:
 
-* **Firmware** — find the loaded app, verify the 59 fingerprint words, and map
+* **Firmware** — find the loaded app, verify the 63 fingerprint words, and map
   the image (`image`, `loader`).
 * **Native sample seed** — create a silent, app-owned stereo sample in memory
   for Extract when no pad provides a source. The SDK retains one seed for the
@@ -93,7 +93,8 @@ The hands-on guide is in [`docs/`](docs/README.md). It has one short page per
 topic — buttons, pads, encoder, knobs, MIDI, screens, drawing, samples, audio, pad
 lighting, tasks, Extract, WAV files, state, firmware, build/install and the
 [emulator loop](docs/23-autonomous-development.md) — and every page ends with a
-code example.
+code example. To pull the stock app out of the official updater, see
+[APP-EXTRACTION.md](APP-EXTRACTION.md).
 
 ## A minimal mod
 

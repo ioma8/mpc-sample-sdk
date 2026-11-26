@@ -50,9 +50,11 @@ if base == 0 {
 ```
 
 `loader::find_main()` returns the load address, or zero. `firmware_ok(base)`
-checks all 59 fingerprint words. Every hook, guard and called function is in one
-table (`src/firmware.rs`); the one data entry, the Sample page vtable, is checked
-where it is read, by `page::bind`.
+checks all 63 fingerprint words. Every hook, guard and called function is in one
+table (`src/firmware.rs`); the table also carries the four vtables the SDK
+identifies at run time (Sample page, Save Project name screen, text editor and
+the lighting sender). A vtable has no instruction word to compare, so it is
+checked by comparing the live object's vptr, for example in `page::bind`.
 
 ## Checking the table against a binary
 
@@ -65,8 +67,12 @@ python3 scripts/check-firmware-table.py "usr/bin/MPC Sample"
 ```
 
 The binary is `usr/bin/MPC Sample` from the rootfs of the official updater's
-`Update.img` (1.3.0.12: 119,243,440 bytes). The offsets are file offsets, so the
-binary can be read as it is on disk.
+`Update.img` (1.3.0.12: 119,243,440 bytes). The table's offsets are
+image-relative addresses. In the app's first `PT_LOAD` they equal file offsets,
+which is where every fingerprinted instruction lives, so the checker can read the
+binary on disk directly. The vtables sit in the second `PT_LOAD`, where
+`p_offset` and `p_vaddr` differ by `0x10000`; they are only ever reached through
+the loaded image (`base + offset`).
 
 ## Manual installation
 
