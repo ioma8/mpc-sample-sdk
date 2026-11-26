@@ -8,6 +8,19 @@
 use super::descent::{Page, State};
 use crate::image;
 
+#[cfg(feature = "fw-1-4")]
+const TRIM_START_OFFSET: usize = 0x918;
+#[cfg(feature = "fw-1-4")]
+const TRIM_END_OFFSET: usize = 0x970;
+#[cfg(feature = "fw-1-4")]
+const TRIM_START_MIRROR_OFFSET: usize = 0x9c8;
+#[cfg(feature = "fw-1-3")]
+const TRIM_START_OFFSET: usize = 0x7b8;
+#[cfg(feature = "fw-1-3")]
+const TRIM_END_OFFSET: usize = 0x810;
+#[cfg(feature = "fw-1-3")]
+const TRIM_START_MIRROR_OFFSET: usize = 0x868;
+
 /// The app's "is this page showing a sample" predicate.
 const PAGE_HAS_SAMPLE: usize = crate::firmware::CHOP_PREDICATE.offset;
 
@@ -137,6 +150,45 @@ impl Selection {
     #[must_use]
     pub const fn rate(&self) -> u32 {
         self.rate
+    }
+
+    /// Set the selected sample's inclusive trim bounds in its live layer.
+    ///
+    /// This is for the case where the page has not yet sent a knob event, so
+    /// the SDK has no native control-surface context to call its setter with.
+    /// The Sample page model stores these three fields directly; the caller
+    /// should request a repaint after this succeeds.
+    ///
+    /// # Safety
+    /// The page must remain live and this must run on its owning UI thread.
+    #[must_use]
+    pub unsafe fn set_trim_bounds(&self, first: u32, last: u32) -> bool {
+        // SAFETY: `self` came from `current`; this also rejects a page whose
+        // selection changed before the write.
+        if !unsafe { self.is_current() } || first > last || last >= self.frames {
+            return false;
+        }
+        let Some(layers_field) = self.state.checked_add(super::descent::STATE_LAYERS_OFFSET) else {
+            return false;
+        };
+        let Some(layers) = image::read_pointer(layers_field) else {
+            return false;
+        };
+        let Some(sample_slot) = layers.checked_add(super::descent::LAYERS_SAMPLE_OFFSET) else {
+            return false;
+        };
+        if image::read_pointer(sample_slot) != Some(self.sample) {
+            return false;
+        }
+        let first = first.to_le_bytes();
+        let last = last.to_le_bytes();
+        // SAFETY: selection identity and the live layer were checked above;
+        // these are the documented u32 trim fields in that layer.
+        unsafe {
+            image::write(layers + TRIM_START_OFFSET, &first)
+                && image::write(layers + TRIM_END_OFFSET, &last)
+                && image::write(layers + TRIM_START_MIRROR_OFFSET, &first)
+        }
     }
 
     /// Whether this exact source is still the selected, visible Sample page.

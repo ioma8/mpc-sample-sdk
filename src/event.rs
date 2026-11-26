@@ -17,6 +17,8 @@ pub mod button {
     pub const DATA: u32 = 0x6f;
     /// B3.
     pub const B3: u32 = 0x0e;
+    /// STOP transport button.
+    pub const STOP: u32 = 0x51;
     /// PLUS.
     pub const PLUS: u32 = 0x36;
     /// MINUS.
