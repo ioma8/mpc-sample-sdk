@@ -72,6 +72,13 @@ loads the library. Get it from the firmware build you target; the value above is
 the one for MPC Sample 1.3.0.12 used by minimod. For MPC Sample 1.4.0.8 it is
 `2b1ce171e951c90bf08cf375d7db9065f1782745b07a436bb2d22fdaabba0af0`.
 
+When a package selects mutually exclusive firmware profiles through Cargo
+features, use `--no-default-features` with `--features` to choose one profile:
+
+```sh
+./build-mod.sh --package my-mod --no-default-features --features fw-1-4
+```
+
 Optional `--env KEY=VALUE` adds a systemd `Environment=` line (safe values only),
 for example:
 

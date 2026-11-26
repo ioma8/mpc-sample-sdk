@@ -16,6 +16,7 @@ options:
   --name NAME               output basename (default: the package name)
   --output-dir DIR          output directory (default: build)
   --target TARGET           Rust target (default: aarch64-unknown-linux-gnu)
+  --no-default-features     do not enable Cargo's default package features
   --features FEATURES       Cargo features to enable
   --require-symbol SYMBOL   fail if the ELF has no such symbol (repeatable)
   --pack                    also write build/<name>.zip
@@ -37,6 +38,7 @@ name=
 output_dir=build
 target=aarch64-unknown-linux-gnu
 features=
+no_default_features=0
 pack=0
 firmware=
 display=
@@ -55,6 +57,7 @@ while [ "$#" -gt 0 ]; do
         --output-dir) need_value "$@"; output_dir=$2; shift 2 ;;
         --target) need_value "$@"; target=$2; shift 2 ;;
         --features) need_value "$@"; features=$2; shift 2 ;;
+        --no-default-features) no_default_features=1; shift ;;
         --require-symbol) need_value "$@"; symbols="$symbols $2"; shift 2 ;;
         --pack) pack=1; shift ;;
         --firmware-sha256) need_value "$@"; firmware=$2; shift 2 ;;
@@ -123,7 +126,11 @@ esac
 mkdir -p "$output_dir"
 
 echo "== cargo build ($package) =="
-if [ -n "$features" ]; then
+if [ "$no_default_features" = 1 ] && [ -n "$features" ]; then
+    cargo build --release --manifest-path "$manifest" --target "$target" -p "$package" --lib --no-default-features --features "$features"
+elif [ "$no_default_features" = 1 ]; then
+    cargo build --release --manifest-path "$manifest" --target "$target" -p "$package" --lib --no-default-features
+elif [ -n "$features" ]; then
     cargo build --release --manifest-path "$manifest" --target "$target" -p "$package" --lib --features "$features"
 else
     cargo build --release --manifest-path "$manifest" --target "$target" -p "$package" --lib
