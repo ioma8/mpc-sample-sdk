@@ -60,23 +60,29 @@ The current checkout exposes hardware identifiers in `event::button` and `event:
 
 ## Install
 
-Install the published crate from [crates.io](https://crates.io/crates/mpc-sample-sdk):
+The two-firmware port is available from Git and has not been released to
+[crates.io](https://crates.io/crates/mpc-sample-sdk) yet. Select the firmware
+in your mod's `Cargo.toml`; the selection is made at compile time.
+
+For **MPC Sample 1.3.0.12**, use the default `fw-1-3` feature:
 
 ```toml
 [dependencies]
-mpc-sample-sdk = "0.9"
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk.git", rev = "5bd56a7" }
 ```
 
-The default profile targets 1.3.0.12. For 1.4.0.8, disable the default and pick
-the 1.4 table:
+For **MPC Sample 1.4.0.8**, disable the default feature and select `fw-1-4`:
 
 ```toml
 [dependencies]
-mpc-sample-sdk = { version = "0.9", default-features = false, features = ["fw-1-4"] }
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk.git", rev = "5bd56a7", default-features = false, features = ["fw-1-4"] }
 ```
 
-Use a Git dependency only when you need an unreleased change from the SDK
-repository.
+To switch versions, change the dependency declaration and rebuild the mod.
+Enable exactly one firmware feature: enabling both or neither fails the build.
+The loader checks the app's fingerprints and refuses to install a mod built for
+a different firmware. See [Firmware and the loader](docs/17-firmware.md) for
+details.
 
 A mod builds as a `cdylib`:
 

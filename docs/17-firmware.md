@@ -10,10 +10,11 @@ any other image instead of patching the wrong offsets.
 | `fw-1-4` | MPC Sample 1.4.0.8 (`d87ac8c12e9`) |
 
 Both tables use the same names, so a mod selects the firmware once, in its
-manifest, and never branches in code:
+manifest, and never branches in code. Until the port is released, use the Git
+revision; for example, for 1.4:
 
 ```toml
-mpc-sample-sdk = { version = "0.9", default-features = false, features = ["fw-1-4"] }
+mpc-sample-sdk = { git = "https://github.com/ioma8/mpc-sample-sdk.git", rev = "5bd56a7", default-features = false, features = ["fw-1-4"] }
 ```
 
 ## The normal path
