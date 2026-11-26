@@ -1,7 +1,7 @@
 [package]
 name = "mpc-sample-sdk"
 description = "Rust mod SDK for the Akai MPC Sample firmware"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -9,6 +9,12 @@ readme = "README.md"
 repository = "https://github.com/ioma8/mpc-sample-sdk"
 keywords = ["audio", "reverse-engineering", "firmware"]
 categories = ["multimedia::audio"]
+
+[features]
+# Exactly one firmware profile; see src/firmware.rs.
+default = ["fw-1-3"]
+fw-1-3 = []
+fw-1-4 = []
 
 [dependencies]
 libc = "0.2"

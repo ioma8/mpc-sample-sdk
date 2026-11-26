@@ -54,6 +54,8 @@ on the command thread and requires the native callback to consume each block
 before returning. After the native execute method returns, the SDK checks the
 frame count and callback state once; it reports `NotApplied` if they do not show
 a complete write. In-flight callbacks retain their own audio reference.
+The SDK converts the rendered buffer to the source sample's native channel
+count: mono is duplicated for stereo, and stereo is averaged for mono.
 
 `destination` controls where the new sample lands:
 

@@ -1,7 +1,20 @@
 # Firmware and the loader
 
-The SDK is built for **MPC Sample 1.3.0.12**. It refuses to install on any other
-image instead of patching the wrong offsets.
+The SDK is built for **MPC Sample 1.3.0.12** and **1.4.0.8**. It carries one
+address table per build, compiles against exactly one, and refuses to install on
+any other image instead of patching the wrong offsets.
+
+| Cargo feature | stock build |
+|---|---|
+| `fw-1-3` (default) | MPC Sample 1.3.0.12 (`40e46ca7991`) |
+| `fw-1-4` | MPC Sample 1.4.0.8 (`d87ac8c12e9`) |
+
+Both tables use the same names, so a mod selects the firmware once, in its
+manifest, and never branches in code:
+
+```toml
+mpc-sample-sdk = { version = "0.9", default-features = false, features = ["fw-1-4"] }
+```
 
 ## The normal path
 
@@ -50,7 +63,7 @@ if base == 0 {
 ```
 
 `loader::find_main()` returns the load address, or zero. `firmware_ok(base)`
-checks all 63 fingerprint words. Every hook, guard and called function is in one
+checks all 63 fingerprint words of the selected profile. Every hook, guard and called function is in one
 table (`src/firmware.rs`); the table also carries the four vtables the SDK
 identifies at run time (Sample page, Save Project name screen, text editor and
 the lighting sender). A vtable has no instruction word to compare, so it is
@@ -66,13 +79,46 @@ changed:
 python3 scripts/check-firmware-table.py "usr/bin/MPC Sample"
 ```
 
+Without `--fw` the script tries both profiles and reports the one that matches;
+`--fw 1.3` or `--fw 1.4` checks a single table.
+
 The binary is `usr/bin/MPC Sample` from the rootfs of the official updater's
-`Update.img` (1.3.0.12: 119,243,440 bytes). The table's offsets are
+`Update.img` (1.3.0.12: 119,243,440 bytes, 1.4.0.8: 128,398,464 bytes). The table's offsets are
 image-relative addresses. In the app's first `PT_LOAD` they equal file offsets,
 which is where every fingerprinted instruction lives, so the checker can read the
 binary on disk directly. The vtables sit in the second `PT_LOAD`, where
 `p_offset` and `p_vaddr` differ by `0x10000`; they are only ever reached through
 the loaded image (`base + offset`).
+
+## 1.4.0.8 layout status
+
+The 1.4 build moved three app objects and left the slice, selection and layer
+internals byte-identical. Both layouts ship, selected by the same feature:
+
+| object field | 1.3.0.12 | 1.4.0.8 |
+|---|---|---|
+| screen binding | `0x178` | `0x1b8` |
+| screen selection / chop binding | `0x180` / `0x168` | `0x1c0` / `0x1a8` |
+| chop mode | view `0x1ee0` | controller at `screen+0x158`, flag `+0x53` bit 0 |
+| state layers / state program | `0x22e8` / `0x2310` | `0x23a8` / `0x23d0` |
+| pad tables (program and surface) | `0x2808` / `0x2810` | `0x28b0` / `0x28b8`, probed at runtime |
+| encoder data target | `0x2da8` | `0x2da8` (verified against live button and encoder events) |
+| binding state, selection, slice, layer and sample fields | unchanged | unchanged |
+
+The DATA encoder is an embedded object at `+0x2da8` relative to a button
+event's surface; it is not a pointer stored at that offset. Pad pressure
+events carry a different surface object. Pad tables themselves live on program
+objects: `DrumProgram`/`AuxProgram` carry 128 `Instrument` pointers at
+`+0x28b0` in 1.4 (`+0x2808` in 1.3), so a surface that is not a program yields
+no table rather than a wrong one.
+
+The other values were measured from the app's own instructions by aligning the
+functions that use them, then checked live: the 1.4.0.8 app runs in a QEMU lab
+built from this update image, and a probe mod walks the live object graph
+(`SampleModeScreen -> InstrumentConnector -> Instrument -> InstrumentLayer ->
+Sample -> metadata`). The method and evidence are in
+[VALIDATION-1.4.0.8.md](../VALIDATION-1.4.0.8.md). The test suite runs against
+both profiles.
 
 ## Manual installation
 

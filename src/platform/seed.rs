@@ -6,8 +6,6 @@ use crate::platform::{control, pads, sample, selection};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 mod layout {
-    pub(super) const SURFACE_PAD_LIST: usize = 0x2808;
-    pub(super) const SURFACE_PAD_LIST_END: usize = 0x2810;
     /// The holder sits this far past the sample slot.
     pub(super) const HOLDER_FROM_SAMPLE: usize =
         0x4b0 - crate::platform::descent::LAYERS_SAMPLE_OFFSET;
@@ -103,10 +101,7 @@ fn clear_borrow() -> (usize, bool) {
 /// Record only pads whose empty state can be read before borrowing.
 fn capture_empty_pads(borrow: &mut Borrow, surface: usize) {
     borrow.empty.fill(false);
-    let (Some(first), Some(end)) = (
-        image::read_pointer(surface + layout::SURFACE_PAD_LIST),
-        image::read_pointer(surface + layout::SURFACE_PAD_LIST_END),
-    ) else {
+    let Some((first, end)) = pads::surface_pad_table(surface) else {
         return;
     };
     for (index, item) in borrow

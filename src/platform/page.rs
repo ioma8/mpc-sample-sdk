@@ -1,17 +1,17 @@
 //! What the Sample page is currently showing.
 //!
 //! Two questions decide most of a mod's behaviour: is the Sample page the visible
-//! screen, and is it in chop mode?  Both are answered by the page's own
-//! predicate, not by guessing from state the mod tracks itself.
+//! screen, and is it in chop mode? Both are read from the app's own state.
 
 use crate::image;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The Sample page's vtable, as an offset from the image base.
 pub const SAMPLE_PAGE_VTABLE: usize = crate::firmware::SAMPLE_PAGE_VTABLE.offset;
-/// `[screen + 0x1ee0]` is the chop-mode view the predicate takes.
+/// `[screen + 0x1ee0]` is the 1.3 chop-mode view the predicate takes.
+#[cfg(feature = "fw-1-3")]
 const CHOP_VIEW: usize = 0x1ee0;
-/// The app's predicate for "this view is in chop mode".
+/// The app's visibility predicate.
 const CHOP_PREDICATE: usize = crate::firmware::CHOP_PREDICATE.offset;
 
 /// The Sample page the mod last painted.  It keeps its exported name because the
@@ -60,6 +60,9 @@ pub unsafe fn chop_mode(screen: usize) -> bool {
     if !is_sample_page(screen) {
         return false;
     }
+    #[cfg(feature = "fw-1-4")]
+    return chop_controller_enabled(screen);
+    #[cfg(feature = "fw-1-3")]
     // SAFETY: same predicate, applied to the page's chop view.
     unsafe {
         image::int_of_pointer(
@@ -69,9 +72,22 @@ pub unsafe fn chop_mode(screen: usize) -> bool {
     }
 }
 
+/// The 1.4 handler reads bit 0 of its chop controller's byte at +0x53.
+#[cfg(feature = "fw-1-4")]
+fn chop_controller_enabled(screen: usize) -> bool {
+    let Some(controller) = screen.checked_add(0x158).and_then(image::read_pointer) else {
+        return false;
+    };
+    let mut flag = [0_u8; 1];
+    controller
+        .checked_add(0x53)
+        .is_some_and(|address| image::read(address, &mut flag))
+        && flag[0] & 1 != 0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CHOP_VIEW, chop_mode, screen, set_screen, visible};
+    use super::{chop_mode, screen, set_screen, visible};
 
     #[test]
     fn a_null_screen_is_never_a_sample_page() {
@@ -79,7 +95,24 @@ mod tests {
         assert!(!unsafe { visible(0) });
         // SAFETY: null is rejected without native calls.
         assert!(!unsafe { chop_mode(0) });
-        assert_eq!(CHOP_VIEW, 0x1ee0);
+    }
+
+    #[cfg(feature = "fw-1-4")]
+    #[test]
+    fn chop_controller_flag_tracks_chop_mode() {
+        use crate::image::test_memory;
+        let screen = 0x1000_usize;
+        let controller = 0x2000_usize;
+        for (flag, expected) in [(0, false), (1, true), (2, false)] {
+            let regions = vec![
+                (screen + 0x158, controller.to_le_bytes().to_vec()),
+                (controller + 0x53, vec![flag]),
+            ];
+            assert_eq!(
+                test_memory::with(regions, || super::chop_controller_enabled(screen)),
+                expected
+            );
+        }
     }
 
     #[test]

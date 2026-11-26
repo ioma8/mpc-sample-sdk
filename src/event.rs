@@ -383,16 +383,18 @@ static SHIFT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::n
 static ERASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The encoder's data target inside a surface object.
+///
+/// A live 1.4.0.8 button event's surface plus this offset equals the DATA
+/// encoder event's object. This is an embedded object, not a pointer slot.
 pub const DATA_TARGET_OFFSET: usize = 0x2da8;
 
 /// The data target for an app surface, or zero when there is no surface.
 #[must_use]
 pub fn data_target(surface: usize) -> usize {
     if surface == 0 {
-        0
-    } else {
-        surface.saturating_add(DATA_TARGET_OFFSET)
+        return 0;
     }
+    surface.checked_add(DATA_TARGET_OFFSET).unwrap_or(0)
 }
 
 /// Whether SHIFT is held right now.
@@ -483,4 +485,16 @@ pub unsafe fn replay_button(event: &[u8; 16], key: u8) -> bool {
     // SAFETY: as above.
     unsafe { original(bytes.as_ptr() as usize) };
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DATA_TARGET_OFFSET, data_target};
+    #[test]
+    fn data_target_is_the_embedded_encoder_object() {
+        let surface = 0x1000_0000_usize;
+        assert_eq!(data_target(surface), surface + DATA_TARGET_OFFSET);
+        assert_eq!(data_target(0), 0);
+        assert_eq!(data_target(usize::MAX), 0);
+    }
 }

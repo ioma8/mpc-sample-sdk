@@ -69,7 +69,8 @@ Add `--pack` and the app's first-4KiB SHA-256:
 
 `--firmware-sha256` is the guard the generated `autorun.sh` checks before it
 loads the library. Get it from the firmware build you target; the value above is
-the one for MPC Sample 1.3.0.12 used by minimod.
+the one for MPC Sample 1.3.0.12 used by minimod. For MPC Sample 1.4.0.8 it is
+`2b1ce171e951c90bf08cf375d7db9065f1782745b07a436bb2d22fdaabba0af0`.
 
 Optional `--env KEY=VALUE` adds a systemd `Environment=` line (safe values only),
 for example:

@@ -36,6 +36,8 @@ Start here if you have never built a mod:
 24. [API migration](24-safety-migration.md)
 25. [Pad lighting](25-lighting.md)
 
+For firmware porting evidence and outstanding validation, see the [1.4 port handoff](../PORTING-TO-1_4.md) and [validation report](../VALIDATION-1.4.0.8.md).
+
 Every page has a runnable-shaped example. The examples assume the published
 crate from [crates.io](https://crates.io/crates/mpc-sample-sdk):
 

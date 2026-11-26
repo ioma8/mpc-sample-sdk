@@ -159,9 +159,13 @@ const SLICE_INSERT: usize = crate::firmware::SLICE_INSERT.offset;
 const SLICE_SET_END: usize = crate::firmware::SLICE_SET_END.offset;
 /// The app's selection setter.
 const SELECT_SLICE: usize = crate::firmware::SELECT_SLICE.offset;
-/// `[screen + 0x180]` is the view's selection object.
+/// `[screen + 0x180]` is the selection connector (`+0x1c0` on 1.4.0.8).
+/// The native 1.4 Extract handler calls the selection setter on this connector.
+#[cfg(feature = "fw-1-4")]
+const SCREEN_SELECTION: usize = 0x1c0;
+#[cfg(feature = "fw-1-3")]
 const SCREEN_SELECTION: usize = 0x180;
-/// `[selection + 0x618]` is where the selection index goes.
+/// The selection model within the connector; the setter receives the index separately.
 const SELECTION_INDEX: usize = 0x618;
 
 /// Whether `positions` is a complete, ordered replacement for a sample.
@@ -235,7 +239,10 @@ pub unsafe fn write_markers(sample: usize, positions: &[u32], frames: u32, scree
 /// The view's cached chop mode callback, used when the binding is already torn
 /// down.
 const SET_CHOP_MODE: usize = crate::firmware::SET_CHOP_MODE.offset;
-/// `[screen + 0x168]` is the chop binding.
+/// `[screen + 0x168]` is the chop binding (`+0x1a8` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+const SCREEN_BINDING: usize = 0x1a8;
+#[cfg(feature = "fw-1-3")]
 const SCREEN_BINDING: usize = 0x168;
 /// The binding's flags byte, owner, manager and invoke slot.
 const BINDING_FLAGS: usize = 0xe8;
@@ -326,7 +333,11 @@ pub unsafe fn set_kind(screen: usize, kind: i32) -> bool {
 /// The binding's type byte, or -1 when there is no binding.
 #[must_use]
 pub fn chop_kind(screen: usize) -> i32 {
-    /// `[screen + 0x168]` is the chop binding, `+0x9c` its type.
+    /// `[screen + 0x168]` is the chop binding, `+0x9c` its type
+    /// (`+0x1a8` on 1.4.0.8).
+    #[cfg(feature = "fw-1-4")]
+    const SCREEN_BINDING: usize = 0x1a8;
+    #[cfg(feature = "fw-1-3")]
     const SCREEN_BINDING: usize = 0x168;
     const BINDING_TYPE: usize = 0x9c;
     image::read_pointer(screen.checked_add(SCREEN_BINDING).unwrap_or(0))

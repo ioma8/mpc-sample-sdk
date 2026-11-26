@@ -2,8 +2,8 @@
 
 **A Rust SDK for building Akai MPC Sample mods.**
 
-The universal mod SDK for the Akai MPC Sample 1.3.0.12, written in Rust
-(edition 2024, MSRV 1.97). The SDK is an ordinary Cargo crate: a mod is a Rust
+The universal mod SDK for the Akai MPC Sample 1.3.0.12 and 1.4.0.8, written
+in Rust (edition 2024, MSRV 1.97). The SDK is an ordinary Cargo crate: a mod is a Rust
 `cdylib`, and the build script invokes `cargo` — no C or C++ is compiled.
 
 ## Built in Rust
@@ -64,7 +64,15 @@ Install the published crate from [crates.io](https://crates.io/crates/mpc-sample
 
 ```toml
 [dependencies]
-mpc-sample-sdk = "0.8"
+mpc-sample-sdk = "0.9"
+```
+
+The default profile targets 1.3.0.12. For 1.4.0.8, disable the default and pick
+the 1.4 table:
+
+```toml
+[dependencies]
+mpc-sample-sdk = { version = "0.9", default-features = false, features = ["fw-1-4"] }
 ```
 
 Use a Git dependency only when you need an unreleased change from the SDK

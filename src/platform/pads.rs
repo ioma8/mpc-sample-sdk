@@ -10,13 +10,83 @@ use crate::image;
 const FREE_PAD: usize = crate::firmware::FREE_PAD.offset;
 /// The app's "is this pad state busy" entry.
 const PAD_BUSY: usize = crate::firmware::PAD_BUSY.offset;
-/// `[program + 0x2808]` is the first pad state, `+0x2810` the last.
+/// `[program + 0x2808]` is the first pad state, `+0x2810` the last
+/// (`+0x28b0` / `+0x28b8` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+const PAD_STATES: usize = 0x28b0;
+#[cfg(feature = "fw-1-3")]
 const PAD_STATES: usize = 0x2808;
 /// The app never has more pads than this.
 const MAX_PADS: usize = 128;
-/// `[surface + 0x2808]` is the first pad state, `+0x2810` the last.
+/// `[surface + 0x2808]` is the first pad state, `+0x2810` the last
+/// (`+0x28b0` / `+0x28b8` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+const SURFACE_PADS: usize = 0x28b0;
+#[cfg(feature = "fw-1-3")]
 const SURFACE_PADS: usize = 0x2808;
+#[cfg(feature = "fw-1-4")]
+const SURFACE_PADS_END: usize = 0x28b8;
+#[cfg(feature = "fw-1-3")]
 const SURFACE_PADS_END: usize = 0x2810;
+/// The surface layout of the other stock build, tried when the profile's
+/// offset does not describe a pad table. The surface object cannot be reached
+/// in the lab, so this proves the table instead of trusting the guess.
+#[cfg(feature = "fw-1-4")]
+const ALTERNATE_SURFACE_PADS: usize = 0x2808;
+#[cfg(feature = "fw-1-3")]
+const ALTERNATE_SURFACE_PADS: usize = 0x28b0;
+#[cfg(feature = "fw-1-4")]
+const ALTERNATE_SURFACE_PADS_END: usize = 0x2810;
+#[cfg(feature = "fw-1-3")]
+const ALTERNATE_SURFACE_PADS_END: usize = 0x28b8;
+
+/// The surface's pad table, validated: an ordered vector of at most
+/// [`MAX_PADS`] pointers.
+pub(crate) fn surface_pad_table(surface: usize) -> Option<(usize, usize)> {
+    for (step, (begin_offset, end_offset)) in [
+        (SURFACE_PADS, SURFACE_PADS_END),
+        (ALTERNATE_SURFACE_PADS, ALTERNATE_SURFACE_PADS_END),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (Some(begin), Some(end)) = (
+            image::read_pointer(surface.checked_add(begin_offset)?),
+            image::read_pointer(surface.checked_add(end_offset)?),
+        ) else {
+            continue;
+        };
+        if begin == 0 || end <= begin {
+            continue;
+        }
+        let bytes = end.checked_sub(begin)?;
+        if bytes % 8 != 0 || bytes / 8 > MAX_PADS {
+            continue;
+        }
+        // The profile's offset is trusted; the other build's offset is only a
+        // fallback, and a parameter or listener vector has the same shape as a
+        // pad table, so prove its first slots hold live pad objects.
+        if step == 0 {
+            return Some((begin, end));
+        }
+        let count = bytes / 8;
+        let mut plausible = true;
+        for index in 0..count.min(4) {
+            match image::read_u64(begin + index * 8) {
+                Some(0) => {}
+                Some(value) if image::is_app_object(value as usize) => {}
+                _ => {
+                    plausible = false;
+                    break;
+                }
+            }
+        }
+        if plausible {
+            return Some((begin, end));
+        }
+    }
+    None
+}
 /// `InstrumentLayer::active`, confirmed in the firmware's native serializer.
 const LAYER_ACTIVE: usize = 0xb18;
 
@@ -27,12 +97,38 @@ const LAYER_ACTIVE: usize = 0xb18;
 /// `program` must be the live program object on its owning UI thread.
 #[must_use]
 pub unsafe fn first_free_pad(program: usize) -> Option<i32> {
-    // SAFETY: `base + FREE_PAD` is the entry the app itself calls with its
-    // program object, and the caller guarantees the object.
-    let pad = unsafe { image::int_of_pointer(image::base() + FREE_PAD, program) };
+    // 1.4.0.8 returns `{u32 index, u8 found}` in x0; the app's own callers test
+    // byte 4 before using the index. 1.3.0.12 returns a plain `int`.
+    #[cfg(feature = "fw-1-4")]
+    let pad: i64 = {
+        #[repr(C)]
+        struct FreePad {
+            index: u32,
+            found: u8,
+            padding: [u8; 3],
+        }
+        // SAFETY: `base + FREE_PAD` is the entry the app itself calls with its
+        // program object, and the caller guarantees the object.
+        let find: unsafe extern "C" fn(usize) -> FreePad =
+            unsafe { core::mem::transmute(image::base() + FREE_PAD) };
+        // SAFETY: as above.
+        let result = unsafe { find(program) };
+        if result.found == 0 {
+            return None;
+        }
+        i64::from(result.index)
+    };
+    #[cfg(feature = "fw-1-3")]
+    let pad: i64 = {
+        // SAFETY: `base + FREE_PAD` is the entry the app itself calls with its
+        // program object, and the caller guarantees the object.
+        let pad = unsafe { image::int_of_pointer(image::base() + FREE_PAD, program) };
+        i64::from(pad)
+    };
     usize::try_from(pad)
-        .is_ok_and(|index| index < MAX_PADS)
-        .then_some(pad)
+        .ok()
+        .filter(|index| *index < MAX_PADS)
+        .and_then(|index| i32::try_from(index).ok())
 }
 
 /// Whether a known program has at least `required` free pads.
@@ -49,6 +145,34 @@ pub unsafe fn has_room(program: Option<usize>, required: usize) -> bool {
         .filter(|program| *program != 0)
         // SAFETY: the caller guarantees the live program object.
         .is_some_and(|program| unsafe { free_count(program) } >= required)
+}
+
+/// The program's pad slot, or `None` when the vector or index is unavailable.
+///
+/// The slot contains an instrument, which can remain unchanged when its sample changes.
+#[must_use]
+pub fn pad_slot(program: usize, index: i32) -> Option<usize> {
+    let begin = image::read_pointer(program.checked_add(PAD_STATES)?)?;
+    let end = image::read_pointer(program.checked_add(PAD_STATES + 8)?)?;
+    if begin == 0 || end <= begin {
+        return None;
+    }
+    let index = usize::try_from(index).ok()?;
+    if index >= MAX_PADS || (end - begin) / 8 <= index {
+        return None;
+    }
+    image::read_u64(begin + index * 8).map(|slot| slot as usize)
+}
+
+/// Read a pad's sample through the program, without requiring a surface event.
+pub(crate) fn program_sample(program: usize, index: i32) -> Option<usize> {
+    let state = pad_slot(program, index).filter(|state| *state != 0)?;
+    let layers = super::descent::State::at(state).layers()?;
+    let end = image::read_pointer(state.checked_add(super::descent::STATE_LAYERS_OFFSET + 8)?)?;
+    if layers.address() == 0 || end <= layers.address() {
+        return None;
+    }
+    layers.sample().filter(|sample| *sample != 0)
 }
 
 /// How many pads the app considers free.
@@ -98,11 +222,7 @@ fn layer_for_pad(surface: usize, pad: i32) -> Option<usize> {
     if surface == 0 {
         return None;
     }
-    let array = image::read_pointer(surface.checked_add(SURFACE_PADS)?)?;
-    let end = image::read_pointer(surface.checked_add(SURFACE_PADS_END)?)?;
-    if array == 0 || end < array {
-        return None;
-    }
+    let (array, end) = surface_pad_table(surface)?;
     let index = usize::try_from(pad).ok()?;
     if index >= MAX_PADS || (end - array) / 8 <= index {
         return None;
@@ -126,11 +246,7 @@ pub fn pad_for_state(surface: usize, state: usize) -> Option<i32> {
     if surface == 0 || state == 0 {
         return None;
     }
-    let array = image::read_pointer(surface.checked_add(SURFACE_PADS)?)?;
-    let end = image::read_pointer(surface.checked_add(SURFACE_PADS_END)?)?;
-    if array == 0 || end < array {
-        return None;
-    }
+    let (array, end) = surface_pad_table(surface)?;
     let count = ((end - array) / 8).min(MAX_PADS);
     for index in 0..count {
         if image::read_pointer(array.checked_add(index.checked_mul(8)?)?) == Some(state) {
@@ -150,11 +266,7 @@ pub fn pad_for_sample(surface: usize, sample: usize) -> Option<i32> {
     if surface == 0 || sample == 0 {
         return None;
     }
-    let array = image::read_pointer(surface.checked_add(SURFACE_PADS)?)?;
-    let end = image::read_pointer(surface.checked_add(SURFACE_PADS_END)?)?;
-    if array == 0 || end < array {
-        return None;
-    }
+    let (array, end) = surface_pad_table(surface)?;
     let count = ((end - array) / 8).min(MAX_PADS);
     for index in 0..count {
         let pad = i32::try_from(index).ok()?;
@@ -216,7 +328,10 @@ pub unsafe fn set_layer_active(surface: usize, pad: i32, active: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PADS, PAD_STATES, SURFACE_PADS, SURFACE_PADS_END, has_room, sample_for_pad};
+    use super::{
+        ALTERNATE_SURFACE_PADS, ALTERNATE_SURFACE_PADS_END, MAX_PADS, PAD_STATES, SURFACE_PADS,
+        SURFACE_PADS_END, has_room, sample_for_pad, surface_pad_table,
+    };
 
     #[test]
     fn an_unknown_program_has_no_proven_room() {
@@ -228,8 +343,93 @@ mod tests {
     }
 
     #[test]
+    fn the_surface_pad_table_is_probed() {
+        use crate::image::test_memory;
+
+        fn put(bytes: &mut [u8], offset: usize, value: u64) {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let surface = 0x1000_0000_usize;
+        let mut bytes = vec![0_u8; 0x2900];
+
+        // Profile table: an empty (all-null) table inside the fixture.
+        put(&mut bytes, SURFACE_PADS, (surface + 0x1000) as u64);
+        put(&mut bytes, SURFACE_PADS_END, (surface + 0x1008) as u64);
+        assert_eq!(
+            test_memory::with(vec![(surface, bytes.clone())], || surface_pad_table(
+                surface
+            )),
+            Some((surface + 0x1000, surface + 0x1008))
+        );
+
+        // Profile slot empty, the other layout's slot valid.
+        put(&mut bytes, SURFACE_PADS, 0);
+        put(&mut bytes, SURFACE_PADS_END, 0);
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS,
+            (surface + 0x1100) as u64,
+        );
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS_END,
+            (surface + 0x1108) as u64,
+        );
+        assert_eq!(
+            test_memory::with(vec![(surface, bytes.clone())], || surface_pad_table(
+                surface
+            )),
+            Some((surface + 0x1100, surface + 0x1108))
+        );
+
+        // An element that is not a live app object rejects the offset.
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS,
+            (surface + 0x1200) as u64,
+        );
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS_END,
+            (surface + 0x1210) as u64,
+        );
+        put(&mut bytes, 0x1200, 1);
+        assert_eq!(
+            test_memory::with(vec![(surface, bytes.clone())], || surface_pad_table(
+                surface
+            )),
+            None
+        );
+
+        // An inverted range is rejected too.
+        put(&mut bytes, 0x1200, 0);
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS,
+            (surface + 0x1210) as u64,
+        );
+        put(
+            &mut bytes,
+            ALTERNATE_SURFACE_PADS_END,
+            (surface + 0x1200) as u64,
+        );
+        assert_eq!(
+            test_memory::with(vec![(surface, bytes)], || surface_pad_table(surface)),
+            None
+        );
+    }
+
+    #[test]
     fn the_offsets_are_the_documented_ones() {
-        assert_eq!(PAD_STATES, 0x2808);
+        assert_eq!(
+            PAD_STATES,
+            if cfg!(feature = "fw-1-4") {
+                0x28b0
+            } else {
+                0x2808
+            }
+        );
         assert_eq!(MAX_PADS, 128);
     }
 
@@ -277,6 +477,52 @@ mod tests {
         ];
         assert_eq!(
             test_memory::with(regions, || sample_for_pad(surface, 0)),
+            Some(sample)
+        );
+    }
+
+    #[test]
+    fn program_pad_exposes_sample_when_instrument_slot_stays_the_same() {
+        use crate::image::test_memory;
+        let (program, table, state, layers, sample) = (
+            0x0080_0000_usize,
+            0x0081_0000_usize,
+            0x0082_0000_usize,
+            0x0083_0000_usize,
+            0x0084_0000_usize,
+        );
+        let pointer = |address: usize| address.to_le_bytes().to_vec();
+        let regions = vec![
+            (program + PAD_STATES, pointer(table)),
+            (program + PAD_STATES + 8, pointer(table + 8)),
+            (table, pointer(state)),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET,
+                pointer(layers),
+            ),
+            (
+                state + crate::platform::descent::STATE_LAYERS_OFFSET + 8,
+                pointer(layers),
+            ),
+            (
+                layers + crate::platform::descent::LAYERS_SAMPLE_OFFSET,
+                pointer(sample),
+            ),
+        ];
+        assert_eq!(
+            test_memory::with(regions.clone(), || super::program_sample(program, 0)),
+            None
+        );
+        let mut regions = regions;
+        regions
+            .iter_mut()
+            .find(|(address, _)| {
+                *address == state + crate::platform::descent::STATE_LAYERS_OFFSET + 8
+            })
+            .unwrap()
+            .1 = pointer(layers + 0xc90);
+        assert_eq!(
+            test_memory::with(regions, || super::program_sample(program, 0)),
             Some(sample)
         );
     }

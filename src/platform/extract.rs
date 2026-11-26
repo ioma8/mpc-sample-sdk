@@ -38,7 +38,7 @@ pub struct Request<'a> {
     pub buffer: Option<&'a [f32]>,
     /// The source sample's length in frames.
     pub source_frames: u32,
-    /// The rendered audio's channel count.
+    /// The rendered audio's channel count. It is converted to the source sample's channels.
     pub channels: u32,
     /// First source frame.
     pub start: u32,
@@ -67,7 +67,7 @@ pub struct Generated<'a> {
     pub name: &'static CStr,
     /// Interleaved floating-point audio.
     pub audio: &'a [f32],
-    /// Number of interleaved channels (one or two).
+    /// Number of interleaved channels (one or two); converted to the seed's channels.
     pub channels: u32,
     /// Destination pad index, from 0 through 127.
     pub destination: i32,
@@ -410,6 +410,18 @@ fn write_u64(address: usize, value: u64) -> bool {
     unsafe { image::write(address, &value.to_le_bytes()) }
 }
 
+/// Match the rendered audio to the channel count the native writer expects.
+fn writer_audio(audio: &[f32], input_channels: u32, output_channels: u16) -> Arc<[f32]> {
+    match (input_channels, output_channels) {
+        (1, 2) => audio.iter().flat_map(|sample| [*sample, *sample]).collect(),
+        (2, 1) => audio
+            .chunks_exact(2)
+            .map(|pair| (pair[0] + pair[1]) * 0.5)
+            .collect(),
+        _ => Arc::from(audio),
+    }
+}
+
 /// Run one native Extract.
 ///
 /// # Safety
@@ -477,6 +489,16 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     let Some(program) = super::descent::State::at(request.state).program() else {
         return Err(ExtractError::NoProgram);
     };
+    let native_channels = if request.buffer.is_some() {
+        super::descent::State::at(request.state)
+            .layers()
+            .and_then(super::descent::Layers::sample)
+            .and_then(super::descent::geometry)
+            .map(|geometry| u32::from(geometry.channels))
+            .ok_or(ExtractError::NotApplied)?
+    } else {
+        request.channels
+    };
     // The stock handler calls its free-pad finder before constructing Extract,
     // even when the SDK will redirect the command to an explicit destination.
     // SAFETY: the request contract supplies the live program.
@@ -485,12 +507,20 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
     let before_target = request
         .destination
         .and_then(|pad| pads::sample_for_pad(surface, pad));
+    let before_slot = request
+        .destination
+        .and_then(|pad| pads::pad_slot(program, pad));
+    let before_sample = request
+        .destination
+        .and_then(|pad| pads::program_sample(program, pad));
     // SAFETY: native string construction follows run's firmware/thread contract.
     let name = unsafe { name_object(request.name) };
     let operation = Arc::new(Operation {
         arm: Arm {
-            buffer: request.buffer.map(Arc::from),
-            channels: request.channels,
+            buffer: request
+                .buffer
+                .map(|audio| writer_audio(audio, request.channels, native_channels as u16)),
+            channels: native_channels,
             start: request.start,
             end: request.end,
             name,
@@ -518,7 +548,14 @@ unsafe fn run_inner(request: &Request<'_>, borrowed: bool) -> Result<Extracted, 
         wait_for_completion(&operation);
     }
     let assigned = match request.destination {
-        Some(pad) => pads::sample_for_pad(surface, pad) != before_target,
+        // The surface is absent on a host without control-surface events, so
+        // also compare the destination slot in the program's own pad table.
+        Some(pad) => {
+            pads::sample_for_pad(surface, pad) != before_target
+                || pads::pad_slot(program, pad) != before_slot
+                || pads::program_sample(program, pad)
+                    .is_some_and(|sample| Some(sample) != before_sample)
+        }
         // SAFETY: only a request without a destination needs the live program.
         None => {
             // SAFETY: the caller still holds the live program on the UI thread.
@@ -640,9 +677,19 @@ unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
 mod tests {
     use super::{
         Arm, ExtractError, Generated, Operation, RANGE_END, RANGE_START, Request, Source, run,
-        wait_for_completion,
+        wait_for_completion, writer_audio,
     };
     use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
+
+    #[test]
+    fn rendered_audio_matches_the_native_sample_channels() {
+        assert_eq!(
+            &*writer_audio(&[0.25, -0.5], 1, 2),
+            &[0.25, 0.25, -0.5, -0.5]
+        );
+        assert_eq!(&*writer_audio(&[1.0, 0.0, -0.5, 0.5], 2, 1), &[0.5, 0.0]);
+        assert_eq!(&*writer_audio(&[0.25, -0.5], 2, 2), &[0.25, -0.5]);
+    }
 
     #[test]
     fn generated_audio_rejects_invalid_geometry_before_touching_the_firmware() {

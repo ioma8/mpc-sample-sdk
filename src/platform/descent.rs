@@ -11,13 +11,22 @@ use core::ops::RangeInclusive;
 use crate::firmware;
 use crate::image;
 
-/// `[page + 0x178]` is the Sample page's binding.
+/// `[page + 0x178]` is the Sample page's binding (`+0x1b8` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+const PAGE_BINDING: usize = 0x1b8;
+#[cfg(feature = "fw-1-3")]
 const PAGE_BINDING: usize = 0x178;
 /// `[binding + 0x60]` is the state the app's Extract handler reads.
 const BINDING_STATE: usize = 0x60;
-/// `[state + 0x22e8]` is the layer list.
+/// `[state + 0x22e8]` is the layer list (`+0x23a8` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+pub(crate) const STATE_LAYERS_OFFSET: usize = 0x23a8;
+#[cfg(feature = "fw-1-3")]
 pub(crate) const STATE_LAYERS_OFFSET: usize = 0x22e8;
-/// `[state + 0x2310]` is the app's program object.
+/// `[state + 0x2310]` is the app's program object (`+0x23d0` on 1.4.0.8).
+#[cfg(feature = "fw-1-4")]
+const STATE_PROGRAM: usize = 0x23d0;
+#[cfg(feature = "fw-1-3")]
 const STATE_PROGRAM: usize = 0x2310;
 /// `[layers + 0x4a8]` is the slot holding the selected sample.
 /// The layers offset of the selected-sample slot, for layouts that reach past it.
