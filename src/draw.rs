@@ -251,6 +251,26 @@ pub fn toast_visible(now: i64) -> bool {
     toast.until > now && toast.text[0] != 0
 }
 
+/// Whether the repaint pump should draw a toast frame now.
+///
+/// Returns true while the toast is active, then once more after expiry so the
+/// app redraws the region underneath the overlay. That final frame clears stale
+/// pixels when the app would otherwise stay idle.
+#[must_use]
+pub fn toast_repaint_due(now: i64) -> bool {
+    let mut toast = TOAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if toast.text[0] == 0 {
+        return false;
+    }
+    if toast.until > now {
+        return true;
+    }
+    toast.text[0] = 0;
+    true
+}
+
 pub use crate::platform::page::{g_screen, screen};
 
 /// Repaint the component the page last painted, or the page itself.
@@ -321,7 +341,7 @@ pub unsafe fn repaint_component(component: usize) {
 mod tests {
     use std::sync::Mutex;
 
-    use super::{Graphics, TOAST, Toast, toast_line, toast_text, toast_visible};
+    use super::{Graphics, TOAST, Toast, toast_line, toast_repaint_due, toast_text, toast_visible};
 
     /// The toast is process-wide, so the tests that write it serialise.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -365,6 +385,21 @@ mod tests {
         }
         assert_eq!(snapshot, b"first", "the old snapshot must stay intact");
         assert_eq!(toast_text(), b"second");
+        reset();
+    }
+
+    #[test]
+    fn an_expired_toast_requests_one_frame_to_clear_the_overlay() {
+        let _serial = serial();
+        reset();
+        // SAFETY: the string is NUL-terminated; a null repaint skips firmware.
+        unsafe { toast_line(c"brief".as_ptr().cast(), None, 0) };
+        let now = crate::platform::clock::now_ms();
+        assert!(toast_repaint_due(now));
+        assert!(toast_repaint_due(now + 999));
+        assert!(toast_repaint_due(now + 1000));
+        assert_eq!(toast_text(), b"");
+        assert!(!toast_repaint_due(now + 1001));
         reset();
     }
 
