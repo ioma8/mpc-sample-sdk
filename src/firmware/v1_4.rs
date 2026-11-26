@@ -4,7 +4,7 @@
 
 use super::{BTI_C, Entry, PACIASP, call, data, hook, probe};
 
-// --- Hooks: the 22 sites the SDK patches, in install order. ---
+// --- Hooks: the 23 sites the SDK patches, in install order. ---
 
 pub(crate) const SIXTEEN_CTOR: Entry = hook(0x01c0_1a20, PACIASP);
 pub(crate) const SIXTEEN_PROC: Entry = hook(0x0261_2d20, PACIASP);
@@ -21,6 +21,9 @@ pub(crate) const REPAINT: Entry = hook(0x011d_b5a0, PACIASP);
 pub(crate) const STRING_FROM_C: Entry = hook(0x00fe_4b70, PACIASP);
 pub(crate) const EXTRACT_CTOR: Entry = hook(0x01a4_4220, PACIASP);
 pub(crate) const EXTRACT_EXEC: Entry = hook(0x01a4_4590, PACIASP);
+/// The Extract handler's first-free-pad lookup; generated audio redirects it
+/// to the requested pad while its temporary seed is borrowed.
+pub(crate) const EXTRACT_FREE_PAD: Entry = hook(0x02d7_cbe0, PACIASP);
 pub(crate) const WRITER: Entry = hook(0x01e6_1820, PACIASP);
 pub(crate) const NOTE: Entry = hook(0x025e_5d00, PACIASP);
 pub(crate) const CONTROL: Entry = hook(0x021f_1fc0, PACIASP);
@@ -46,7 +49,6 @@ pub(crate) const DRAW_TEXT: Entry = call(0x0111_2cb0, PACIASP);
 pub(crate) const FONT: Entry = call(0x0111_3d10, PACIASP);
 pub(crate) const FONT_DROP: Entry = call(0x0110_2260, BTI_C);
 pub(crate) const STRING_DROP: Entry = call(0x00f9_b720, BTI_C);
-pub(crate) const FREE_PAD: Entry = call(0x02d7_cbe0, PACIASP);
 pub(crate) const PAD_BUSY: Entry = call(0x02d1_6c10, PACIASP);
 pub(crate) const SLICE_RESET: Entry = call(0x02c8_2d80, PACIASP);
 pub(crate) const SLICE_INSERT: Entry = call(0x02c8_3000, PACIASP);
@@ -72,7 +74,7 @@ pub(crate) const EXTRACT_HANDLER: Entry = call(0x01cc_adb0, PACIASP);
 pub(crate) const APP_PROBE_OFFSET: usize = 0x00bc_a5c0;
 
 /// Every function and data entry the modules use, in one list.
-pub(crate) const CALLS: [Entry; 25] = [
+pub(crate) const CALLS: [Entry; 24] = [
     SET_COLOUR,
     FILL_RECT,
     SET_FONT,
@@ -80,7 +82,6 @@ pub(crate) const CALLS: [Entry; 25] = [
     FONT,
     FONT_DROP,
     STRING_DROP,
-    FREE_PAD,
     PAD_BUSY,
     SLICE_RESET,
     SLICE_INSERT,
@@ -125,8 +126,8 @@ pub(crate) const GUARDS: [Entry; 20] = [
     probe(0x02c7_46f0, BTI_C),
 ];
 
-/// The 22 hook sites, in install order.
-pub(crate) const HOOKS: [Entry; 22] = [
+/// The 23 hook sites, in install order.
+pub(crate) const HOOKS: [Entry; 23] = [
     SIXTEEN_CTOR,
     SIXTEEN_PROC,
     DATA_HOOK,
@@ -149,4 +150,5 @@ pub(crate) const HOOKS: [Entry; 22] = [
     SAMPLE_SERVICE_DELETE,
     LIGHTING_DTOR,
     LIGHTING_DELETE,
+    EXTRACT_FREE_PAD,
 ];

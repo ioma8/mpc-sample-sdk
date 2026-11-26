@@ -56,6 +56,7 @@ pub(crate) struct Originals {
     pub(crate) str_assign: Option<unsafe extern "C" fn(usize, *const u8)>,
     pub(crate) extract_ctor: Option<extract::Constructor>,
     pub(crate) extract_exec: Option<extract::Command>,
+    pub(crate) extract_free_pad: Option<unsafe extern "C" fn(usize) -> u64>,
     pub(crate) writer: Option<writer::Writer>,
     pub(crate) note: Option<unsafe extern "C" fn(usize, usize, usize, usize)>,
     pub(crate) control: Option<control::SetControl>,
@@ -68,7 +69,7 @@ pub(crate) struct Originals {
 }
 
 /// The trampolines `hook::prepare` returned, in table order.
-const SITES: usize = 22;
+const SITES: usize = 23;
 
 impl Originals {
     /// Type each prepared trampoline by the signature of its site.
@@ -103,6 +104,7 @@ impl Originals {
                 sample_service_delete: typed(trampolines[19]),
                 lighting_dtor: typed(trampolines[20]),
                 lighting_delete: typed(trampolines[21]),
+                extract_free_pad: typed(trampolines[22]),
             }
         }
     }
@@ -170,6 +172,7 @@ pub(crate) unsafe fn install(base: usize) -> bool {
     // SAFETY: the trampolines are the app's own functions.
     unsafe {
         extract::record(originals().extract_ctor, originals().extract_exec);
+        extract::record_free_pad(originals().extract_free_pad);
         control::record(originals().control);
     }
     sample::set_lifecycle_ready(
@@ -277,6 +280,10 @@ fn table() -> [Site; SITES] {
         Site {
             offset: crate::firmware::LIGHTING_DELETE.offset,
             handler: lighting_delete as *const (),
+        },
+        Site {
+            offset: crate::firmware::EXTRACT_FREE_PAD.offset,
+            handler: extract::free_pad_entry as *const (),
         },
     ]
 }
@@ -1060,7 +1067,7 @@ mod tests {
 
     #[test]
     fn the_table_has_one_entry_per_site() {
-        assert_eq!(table().len(), 22);
+        assert_eq!(table().len(), super::SITES);
         assert!(!notes_ready());
     }
 }

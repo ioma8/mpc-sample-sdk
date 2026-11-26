@@ -7,7 +7,7 @@
 use crate::image;
 
 /// The app's first-free-pad finder.
-const FREE_PAD: usize = crate::firmware::FREE_PAD.offset;
+const FREE_PAD: usize = crate::firmware::EXTRACT_FREE_PAD.offset;
 /// The app's "is this pad state busy" entry.
 const PAD_BUSY: usize = crate::firmware::PAD_BUSY.offset;
 /// `[program + 0x2808]` is the first pad state, `+0x2810` the last

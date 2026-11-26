@@ -33,7 +33,7 @@ The evidence and historical investigation are recorded in this document and the 
 ## 1. What the port is
 
 The SDK is a Rust `cdylib` loaded into the stock app with `LD_PRELOAD`. It
-patches 22 hook sites, uses 25 call/data entries (21 functions plus 4 vtables),
+patches 23 hook sites, uses 24 call/data entries (20 functions plus 4 vtables),
 and draws on the app's objects. Every address and every object offset is build-specific:
 
 * the SDK carries **one address table per stock build**;
@@ -278,7 +278,7 @@ instruction as evidence.
 * `src/firmware.rs`: `Purpose`, `Entry`, the helper constructors, the
   fingerprint list, the profile `mod` selection, and the compile errors for
   "both features" / "neither feature".
-* `src/firmware/v1_3.rs` and `v1_4.rs`: 22 hooks, 21 calls, 20 guards (63
+* `src/firmware/v1_3.rs` and `v1_4.rs`: 23 hooks, 20 calls, 20 guards (63
   fingerprinted instruction words) and 4 data entries (vtables, no word), plus
   `APP_PROBE_OFFSET` — 67 table entries per profile, same names. The checker's
   "63 entries match" counts the word-bearing entries.

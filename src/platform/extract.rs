@@ -184,6 +184,8 @@ pub(crate) type Command = unsafe extern "C" fn(usize) -> i32;
 static mut ORIGINAL_CTOR: Option<Constructor> = None;
 /// The app's own command method.
 static mut ORIGINAL_EXEC: Option<Command> = None;
+/// The app's first-free-pad finder, temporarily redirected for a seeded Extract.
+static mut ORIGINAL_FREE_PAD: Option<unsafe extern "C" fn(usize) -> u64> = None;
 // Native names are process-lived because the firmware may retain them. Key by
 // content rather than address, and do not impose an arbitrary lifetime limit.
 static NAMES: Mutex<Vec<(&'static CStr, Box<u64>)>> = Mutex::new(Vec::new());
@@ -198,6 +200,40 @@ pub(crate) unsafe fn record(constructor: Option<Constructor>, execute: Option<Co
     unsafe {
         ORIGINAL_CTOR = constructor;
         ORIGINAL_EXEC = execute;
+    }
+}
+
+/// Record the displaced first-free-pad finder, at install time.
+///
+/// # Safety
+///
+/// Called once, before the hook can run.
+pub(crate) unsafe fn record_free_pad(free_pad: Option<unsafe extern "C" fn(usize) -> u64>) {
+    // SAFETY: the caller's contract.
+    unsafe { ORIGINAL_FREE_PAD = free_pad };
+}
+
+/// The native first-free-pad finder. A seeded Generated Extract temporarily
+/// occupies its requested output pad with the silent source; route the native
+/// handler to that same pad so it does not leave a second source copy behind.
+///
+/// # Safety
+///
+/// The app calls this with its own live program.
+pub(crate) unsafe extern "C" fn free_pad_entry(program: usize) -> u64 {
+    if let Some(destination) = super::seed::first_free_override(program)
+        && let Ok(index) = u32::try_from(destination)
+    {
+        #[cfg(feature = "fw-1-4")]
+        return u64::from(index) | (1_u64 << 32);
+        #[cfg(feature = "fw-1-3")]
+        return u64::from(index);
+    }
+    // SAFETY: recorded before the firmware hook was committed.
+    match unsafe { *core::ptr::addr_of!(ORIGINAL_FREE_PAD) } {
+        // SAFETY: the app supplied its live program object.
+        Some(find) => unsafe { find(program) },
+        None => 0,
     }
 }
 
@@ -647,8 +683,8 @@ unsafe fn run_seeded(request: &Request<'_>) -> Result<Extracted, ExtractError> {
         return Err(ExtractError::NoFreePad);
     }
     // SAFETY: the caller supplies the live page and exclusive UI access.
-    let (state, frames) =
-        unsafe { super::seed::seed_provider(request.screen) }.ok_or(ExtractError::NotApplied)?;
+    let (state, frames) = unsafe { super::seed::seed_provider(request.screen, destination) }
+        .ok_or(ExtractError::NotApplied)?;
     let result = if state == request.state {
         let seeded = Request {
             screen: request.screen,

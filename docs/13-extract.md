@@ -77,6 +77,10 @@ Use `extract::Source::Generated` for a generated buffer on a specific destinatio
 It validates audio geometry, temporarily borrows the SDK's native seed, runs
 Extract and restores the previous sample and holder. The destination is
 overwritten, so choose a free pad first if existing audio must be preserved.
+While the seed is borrowed, the SDK's first-free-pad hook directs the native
+handler to that requested destination. This avoids leaving the handler's
+temporary source copy on a second pad; outside a generated Extract, the native
+finder always runs unchanged.
 
 ```rust
 use mpc_sample_sdk::platform::extract::{self, Generated, Source};

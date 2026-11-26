@@ -36,7 +36,7 @@ It owns everything that is not a feature:
 * **Native sample seed** — create a silent, app-owned stereo sample in memory
   for Extract when no pad provides a source. The SDK retains one seed for the
   process lifetime; Extract writes and registers the rendered output as a WAV.
-* **Hooks** — the in-memory `b`/relay/trampoline engine and all 22 sites.  The
+* **Hooks** — the in-memory `b`/relay/trampoline engine and all 23 sites.  The
   displaced originals stay inside `sites`; a mod never stores or types one.
 * **API** — the `Mod` trait, the event types, and `export_mod!`, which emits
   the `.init_array` entry point that installs the hooks and calls the mod.

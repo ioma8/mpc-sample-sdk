@@ -19,6 +19,10 @@ mod layout {
 /// as a torn record.
 #[derive(Clone, Copy)]
 struct Borrow {
+    /// The program whose native first-free lookup must reuse the requested pad.
+    program: usize,
+    /// The requested output pad, occupied temporarily by the seed.
+    destination: i32,
     /// The layer slot that was overwritten.
     slot: usize,
     /// The sample the slot held before the borrow.
@@ -34,6 +38,8 @@ struct Borrow {
 impl Borrow {
     const fn new() -> Self {
         Self {
+            program: 0,
+            destination: -1,
             slot: 0,
             sample: 0,
             holder: 0,
@@ -130,12 +136,13 @@ fn capture_empty_pads(borrow: &mut Borrow, surface: usize) {
 /// The screen, surface, and most recently observed sample service must remain
 /// live on their owning UI thread until cleanup.
 #[must_use]
-pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
+pub(crate) unsafe fn seed_provider(screen: usize, destination: i32) -> Option<(usize, u32)> {
     let mut borrow = borrow_state();
     if borrow.slot != 0 {
         return None;
     }
     let state = selection::page_state(screen)?;
+    let program = State::at(state).program()?;
     let slot = State::at(state).layers()?.sample_slot()?;
     let old_sample = image::read_u64(slot)?;
     let old_holder = image::read_u64(slot + layout::HOLDER_FROM_SAMPLE)?;
@@ -151,10 +158,19 @@ pub(crate) unsafe fn seed_provider(screen: usize) -> Option<(usize, u32)> {
         return None;
     }
     borrow.provider = seed.sample();
+    borrow.program = program;
+    borrow.destination = destination;
     borrow.slot = slot;
     borrow.sample = old_sample as usize;
     borrow.holder = old_holder as usize;
     Some((state, frames))
+}
+
+/// Return the requested destination while a generated Extract borrows its
+/// silent seed, so the native handler does not allocate a second pad.
+pub(crate) fn first_free_override(program: usize) -> Option<i32> {
+    let borrow = borrow_state();
+    (borrow.program == program && borrow.destination >= 0).then_some(borrow.destination)
 }
 
 /// Remove only new provider copies, preserving every previously populated pad.
@@ -188,6 +204,9 @@ pub(crate) unsafe fn finish(destination: i32) -> bool {
     if restored {
         clear_extra_provider_pads(provider, destination);
     }
+    let mut borrow = borrow_state();
+    borrow.program = 0;
+    borrow.destination = -1;
     restored
 }
 
