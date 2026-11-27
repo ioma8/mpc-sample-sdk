@@ -8,12 +8,6 @@
 use super::descent::{Page, State};
 use crate::image;
 
-#[cfg(feature = "fw-1-4")]
-const TRIM_START_OFFSET: usize = 0x918;
-#[cfg(feature = "fw-1-4")]
-const TRIM_END_OFFSET: usize = 0x970;
-#[cfg(feature = "fw-1-4")]
-const TRIM_START_MIRROR_OFFSET: usize = 0x9c8;
 #[cfg(feature = "fw-1-3")]
 const TRIM_START_OFFSET: usize = 0x7b8;
 #[cfg(feature = "fw-1-3")]
@@ -96,6 +90,28 @@ pub fn program(state: usize) -> Option<usize> {
 }
 
 impl Selection {
+    /// Resolve the native control context and program for the visible page.
+    ///
+    /// # Safety
+    /// The selection must be live on the UI thread.
+    #[cfg(feature = "fw-1-4")]
+    #[must_use]
+    pub unsafe fn trim_control(&self) -> Option<(usize, usize)> {
+        // SAFETY: the caller guarantees the page is live on its UI thread.
+        if !unsafe { self.is_current() } {
+            return None;
+        }
+        let first = image::read_pointer(self.screen.checked_add(0x110)?)?;
+        let second = image::read_pointer(self.screen.checked_add(0x168)?)?;
+        let control = image::read_pointer(first.checked_add(0x50)?)?;
+        if control == 0 || image::read_pointer(second.checked_add(0x20)?)? != control {
+            return None;
+        }
+        if !image::is_app_object(control) {
+            return None;
+        }
+        Some((control, program(self.state)?))
+    }
     /// A selection with the given fields, for tests that never touch the app.
     #[cfg(test)]
     pub(crate) const fn fixture(
@@ -161,6 +177,7 @@ impl Selection {
     ///
     /// # Safety
     /// The page must remain live and this must run on its owning UI thread.
+    #[cfg(feature = "fw-1-3")]
     #[must_use]
     pub unsafe fn set_trim_bounds(&self, first: u32, last: u32) -> bool {
         // SAFETY: `self` came from `current`; this also rejects a page whose
